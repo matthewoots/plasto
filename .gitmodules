@@ -1,0 +1,3 @@
+[submodule "librrtserver_pcl_octree"]
+	path = librrtserver_pcl_octree
+	url = git@github.com:matthewoots/librrtserver_pcl_octree.git
