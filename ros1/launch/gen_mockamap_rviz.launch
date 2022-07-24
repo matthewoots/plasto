@@ -1,0 +1,9 @@
+<launch>
+
+<include file="$(find tbborrt_ros)/launch/gen_mockamap.launch"/>
+
+<!-- Launch RViz with the demo configuration -->
+<node name="rviz" pkg="rviz" type="rviz"
+    args="-d $(find tbborrt_ros)/rviz/mockamap.rviz"/>
+
+</launch>
