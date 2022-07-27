@@ -1,6 +1,12 @@
 <launch>
 
-<include file="$(find tbborrt_ros)/launch/gen_mockamap.launch"/>
+<arg name="map_size" value="30" />
+<arg name="height_size" value="7" />
+
+<include file="$(find tbborrt_ros)/launch/gen_mockamap.launch">
+    <arg name="size" value="$(arg map_size)" />
+    <arg name="height" value="$(arg height_size)" />
+</include>
 
 <!-- Launch RViz with the demo configuration -->
 <node name="rviz" pkg="rviz" type="rviz"

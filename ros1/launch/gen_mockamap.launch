@@ -1,5 +1,8 @@
 <launch>
 
+<arg name="size" default="" />
+<arg name="height" default="" />
+
 <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
   <param name="seed" type="int" value="511"/>
   <param name="update_freq" type="double" value="3.0"/>
@@ -8,9 +11,9 @@
   <param name="resolution" type="double" value="0.25"/>
 
   <!-- map size unit meter-->
-  <param name="x_length" type="int" value="20"/>
-  <param name="y_length" type="int" value="20"/>
-  <param name="z_length" type="int" value="7"/>
+  <param name="x_length" type="int" value="$(arg size)"/>
+  <param name="y_length" type="int" value="$(arg size)"/>
+  <param name="z_length" type="int" value="$(arg height)"/>
 
   <param name="type" type="int" value="1"/>
     <!-- 1 perlin noise parameters -->

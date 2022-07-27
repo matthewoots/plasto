@@ -74,7 +74,7 @@ class tbborrt_ros_node
 
         double _search_interval;
         double _sensor_range, _obstacle_threshold;
-        double _resolution;
+        double _resolution, _map_size, _height_size;
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr _full_cloud, _local_cloud;
 
@@ -176,7 +176,10 @@ class tbborrt_ros_node
             _nh.param<double>("threshold", _obstacle_threshold, 0.3);
 
             _nh.param<double>("search_interval", _search_interval, 0.5);  
-            _nh.param<double>("resolution", _resolution, 0.25); 
+            _nh.param<double>("resolution", _resolution, 0.4); 
+
+            _nh.param<double>("map_size", _map_size, 10.0);
+            _nh.param<double>("height_size", _height_size, 10.0); 
 
             std::vector<double> height_list;
             _nh.getParam("height", height_list);
@@ -207,9 +210,37 @@ class tbborrt_ros_node
             color = Eigen::Vector4d(dis(generator), dis(generator), dis(generator), 0.5);
 
 
-            // current_point = start;
+            std::uniform_real_distribution<double> dis_angle(-M_PI, M_PI);
+            std::uniform_real_distribution<double> dis_height(height_list[0], height_list[1]);
+            double rand_angle = dis_angle(generator);
+            double opp_rand_angle = constrain_to_pi(rand_angle - M_PI);
+
+            std::cout << "rand_angle = " << KBLU << rand_angle << KNRM << " " <<
+                    "opp_rand_angle = " << KBLU << opp_rand_angle << KNRM << std::endl;
+
+            double h = _map_size / 2.0 * 1.5; // multiply with an expansion
+            start = Eigen::Vector3d(h * cos(rand_angle), 
+                h * sin(rand_angle), dis_height(generator));
+            end = Eigen::Vector3d(h * cos(opp_rand_angle), 
+                h * sin(opp_rand_angle), dis_height(generator));
+
+            std::cout << "start_position = " << KBLU << start.transpose() << KNRM << " " <<
+                    "end_position = " << KBLU << end.transpose() << KNRM << " " <<
+                    "distance = " << KBLU << (start-end).norm() << KNRM << std::endl;
+
+            rrt.set_parameters(_obstacle_threshold, _no_fly_zone, 
+            _runtime_error, _height_constrain, _sensor_range, _resolution);
+
+            current_point = start;
 
             search_timer.start();
+        }
+
+        double constrain_to_pi(double x){
+            x = fmod(x + M_PI, 2 * M_PI);
+            if (x < 0)
+                x += 2 * M_PI;
+            return x - M_PI;
         }
 
 

@@ -47,8 +47,8 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     Eigen::Vector3d dimension = Eigen::Vector3d(
         _sensor_range, _sensor_range, _sensor_range);
 
-    Eigen::Vector3d min = start - dimension;
-    Eigen::Vector3d max = start + dimension;
+    Eigen::Vector3d min = current_point - dimension;
+    Eigen::Vector3d max = current_point + dimension;
 
     pcl::CropBox<pcl::PointXYZ> box_filter;
     box_filter.setMin(Eigen::Vector4f(min.x(), min.y(), min.z(), 1.0));
@@ -60,12 +60,12 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     last_pcl_msg = ros::Time::now();
 
     // Publish local cloud as a ros message
-    // pcl::toROSMsg(*_local_cloud, cloud_msg);
+    pcl::toROSMsg(*_local_cloud, cloud_msg);
 
-    // cloud_msg.header.frame_id = "world";
-    // cloud_msg.header.stamp = ros::Time::now();
+    cloud_msg.header.frame_id = "world";
+    cloud_msg.header.stamp = ros::Time::now();
 
-    // local_pcl_pub.publish(cloud_msg);
+    local_pcl_pub.publish(cloud_msg);
     return;
 }
 
@@ -75,7 +75,13 @@ void tbborrt_ros_node::generate_search_path()
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     start_end.first = current_point;
+    start_end.second = end;
 
+    std::cout << "start_end.first = " << KBLU << 
+        start_end.first.transpose() << " " << KNRM << 
+        "start_end.second = " << KBLU << 
+        start_end.second.transpose() << " " << KNRM << 
+        std::endl;
     // Find a RRT path that is quick and stretches to the end point
     vector<Eigen::Vector3d> path = rrt.find_path(previous_search_points, start_end);
     
@@ -88,6 +94,11 @@ void tbborrt_ros_node::generate_search_path()
     // Save global_path
     global_search_path.clear();
     global_search_path = path;
+    previous_search_points.clear();
+    // Previous path does not consist of start point
+    for (int i = 1; i < global_search_path.size(); i++)
+        previous_search_points.push_back(global_search_path[i]);
+
 }
 
 /** @brief Use this function wisely, since check and update may cause an infinite loop
@@ -107,13 +118,17 @@ bool tbborrt_ros_node::check_and_update_search(
     temporary_previous_points.insert(
         temporary_previous_points.begin(), current);
 
+    /** @brief Debug message **/
+    // std::cout << "temporary_previous_points.size() = " << KCYN << temporary_previous_points.size() << KNRM << 
+    //     " previous_search_points.size() = " << KCYN << previous_search_points.size() << KNRM << std::endl;
+
     // Check to see whether the new control point and the previous inputs
     // have any pointclouds lying inside
     int last_safe_idx = -1;
     for (int i = 0; i < temporary_previous_points.size()-1; i++)
     {
         if (!rrt.check_line_validity(
-            previous_search_points[i], previous_search_points[i+1]))
+            temporary_previous_points[i], temporary_previous_points[i+1]))
         {
             last_safe_idx = i;
             break;
@@ -137,16 +152,22 @@ void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
 
     std::lock_guard<std::mutex> cloud_lock(cloud_mutex);
 
+    time_point<std::chrono::system_clock> timer = system_clock::now();
     /** @brief Start of RRT search process **/
 
-    rrt.update_octree(_local_cloud);
-    rrt.set_parameters(_obstacle_threshold, _no_fly_zone, 
-            _runtime_error, _height_constrain, _sensor_range, _resolution);
+    rrt.update_octree(_local_cloud, current_point, end);
 
+    double update_octree_time = duration<double>(system_clock::now() - 
+        timer).count()*1000;
+
+    double update_check_time;
     // Check to see whether the previous data extents to the end
     // if previous point last point connects to end point, do bypass    
-    if (!check_and_update_search(current_point))
+    if (check_and_update_search(current_point))
     {
+        update_check_time = duration<double>(system_clock::now() - 
+            timer).count()*1000 - update_octree_time;
+        std::cout << KCYN << "Bypass" << KNRM << std::endl;
         // Clear global path so that current point can be added
         global_search_path.clear();
         global_search_path.push_back(current_point);
@@ -158,13 +179,24 @@ void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
     // Check to see whether the previous data extents to the end
     // If previous point last point does not connect to end point, there is no bypass
     else
+    {
+        update_check_time = duration<double>(system_clock::now() - 
+            timer).count()*1000 - update_octree_time;
         generate_search_path();
+    }
     
+    std::cout << "full search time taken = " << KGRN <<
+        duration<double>(system_clock::now() - 
+        timer).count()*1000 << "ms" << KNRM << 
+        " update_octree time taken = " << KGRN <<
+        update_octree_time << "ms" << KNRM << 
+        " update_check time taken = " << KGRN <<
+        update_check_time << "ms" << KNRM << std::endl;
+
     nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
     g_rrt_points_pub.publish(global_path);
 
     /** @brief End of RRT search process **/
-
 
     // Project the point forward and find vector of travel
     double step_size = 0.5;
@@ -189,7 +221,7 @@ void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
 
     current_point += global_vector * step_size;
     std::cout << "current_point [" << KBLU << 
-        current_point.transpose() << "]" << KNRM << std::endl;
+        current_point.transpose() << KNRM << "]" << std::endl;
     
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = "world";
