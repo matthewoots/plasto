@@ -62,44 +62,45 @@ class tbborrt_ros_node
     private:
 
         tbborrt_server::tbborrt_server_node rrt;
+        tbborrt_server::tbborrt_server_node::parameters rrt_param;
 
-        std::mutex search_points_mutex, pose_update_mutex, cloud_mutex;
+        std::mutex pose_update_mutex;
 
         ros::NodeHandle _nh;
-        ros::Subscriber pcl2_msg_sub;
+
+        ros::Subscriber pcl2_msg_sub, command_sub;
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
         ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
         
-        std::pair<double,double> _runtime_error, _height_constrain;
-
-        double _search_interval;
-        double _sensor_range, _obstacle_threshold;
-        double _resolution, _map_size, _height_size;
-
         pcl::PointCloud<pcl::PointXYZ>::Ptr _full_cloud, _local_cloud;
 
-        Eigen::Vector3d start, end, current_point;
+        Eigen::Vector3d current_point;
 
-        vector<Eigen::Vector3d> previous_search_points;
         vector<Eigen::Vector3d> global_search_path;
-
-        vector<Eigen::Vector4d> _no_fly_zone;
+        vector<Eigen::Vector4d> no_fly_zone;
 
         Eigen::Vector4d color;
 
-        ros::Time last_pcl_msg;
+        double simulation_step;
+        double agent_step;
+        double max_velocity;
 
-        ros::Timer search_timer;
+        bool received_command = false;
 
-        std::pair<Eigen::Vector3d, Eigen::Vector3d> start_end;
-
+        /** @brief Callbacks, mainly for loading pcl and commands **/
+        void command_callback(const geometry_msgs::PointConstPtr& msg);
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
     
+        /** @brief Functions used in tbborrt **/
         bool check_and_update_search(Eigen::Vector3d first_cp);
-
         void generate_search_path();
 
-        void run_search_timer(const ros::TimerEvent &);
+        /** @brief Timers for searching and agent movement **/
+        ros::Timer search_timer, agent_timer;
+        void rrt_search_timer(const ros::TimerEvent &);
+        void agent_forward_timer(const ros::TimerEvent &);
+
+        int error_counter;
 
         nav_msgs::Path vector_3d_to_path(vector<Vector3d> path_vector)
         {
@@ -145,22 +146,6 @@ class tbborrt_ros_node
             search.scale.x = scale_big;
             search.scale.y = scale_big;
             search.scale.z = scale_big;
-            
-            // geometry_msgs::Point pt;
-            // pt.x = direct_goal[0];
-            // pt.y = direct_goal[1];
-            // pt.z = direct_goal[2];
-
-            // geometry_msgs::Point ctr;
-            // ctr.x = current_point[0];
-            // ctr.y = current_point[1];
-            // ctr.z = current_point[2];
-
-            // sphere_points.pose.position = pt;
-            // search.pose.position = ctr;
-
-            // debug_position_pub.publish(sphere_points);
-            // debug_position_pub.publish(search);
 
         }
 
@@ -169,26 +154,43 @@ class tbborrt_ros_node
         tbborrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
             /** @brief ROS Params */
-            _nh.param<double>("sub_runtime_error", _runtime_error.first, 0.02);
-            _nh.param<double>("runtime_error", _runtime_error.second, 0.1);
+            _nh.param<double>("sub_runtime_error", rrt_param.r_e.first, -1.0);
+            _nh.param<double>("runtime_error", rrt_param.r_e.second, -1.0);
+            _nh.param<double>("simulation_step", simulation_step, -1.0);
 
-            _nh.param<double>("sensor_range", _sensor_range, 5.0);
-            _nh.param<double>("threshold", _obstacle_threshold, 0.3);
+            _nh.param<double>("sensor_range", rrt_param.s_r, -1.0);
+            _nh.param<double>("sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
+            _nh.param<double>("protected_zone", rrt_param.p_z, -1.0);
 
-            _nh.param<double>("search_interval", _search_interval, 0.5);  
-            _nh.param<double>("resolution", _resolution, 0.4); 
+            _nh.param<double>("search_interval", rrt_param.s_i, -1.0);  
+            _nh.param<double>("resolution", rrt_param.r, -1.0); 
 
-            _nh.param<double>("map_size", _map_size, 10.0);
-            _nh.param<double>("height_size", _height_size, 10.0); 
+            _nh.param<double>("map_size", rrt_param.m_s, -1.0);
+            _nh.param<double>("max_velocity", max_velocity, -1.0);
 
             std::vector<double> height_list;
             _nh.getParam("height", height_list);
- 
-            _height_constrain.first = height_list[0];
-            _height_constrain.second = height_list[1];
+            rrt_param.h_c.first = height_list[0];
+            rrt_param.h_c.second = height_list[1];
+
+            std::vector<double> no_fly_zone_list;
+            _nh.getParam("no_fly_zone", no_fly_zone_list);
+            if (!no_fly_zone_list.empty())
+            {
+                for (int i = 0; i < (int)no_fly_zone_list.size() / 4; i++)
+                    no_fly_zone.push_back(
+                        Eigen::Vector4d(
+                        no_fly_zone_list[0+i*4],
+                        no_fly_zone_list[1+i*4],
+                        no_fly_zone_list[2+i*4],
+                        no_fly_zone_list[3+i*4])
+                    );
+            }
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
                 "/mock_map", 1,  boost::bind(&tbborrt_ros_node::pcl2_callback, this, _1));
+            command_sub = _nh.subscribe<geometry_msgs::Point>(
+                "/goal", 1,  boost::bind(&tbborrt_ros_node::command_callback, this, _1));
 
             /** @brief For debug */
             local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/local_map", 10);
@@ -198,18 +200,21 @@ class tbborrt_ros_node
             debug_position_pub = _nh.advertise
                 <visualization_msgs::Marker>("/debug_points", 10);
 
-            /** @brief Timer that when to search */
+            /** @brief Timer for the rrt search and agent */
 		    search_timer = _nh.createTimer(
-                ros::Duration(_search_interval), 
-                &tbborrt_ros_node::run_search_timer, this, false, false);
+                ros::Duration(rrt_param.s_i), 
+                &tbborrt_ros_node::rrt_search_timer, this, false, false);
+            agent_timer = _nh.createTimer(
+                ros::Duration(0.01), 
+                &tbborrt_ros_node::agent_forward_timer, this, false, false);
 
-            // Choose a color for the trajectory using random values
+            /** @brief Choose a color for the trajectory using random values **/
             std::random_device dev;
             std:mt19937 generator(dev());
             std::uniform_real_distribution<double> dis(0.0, 1.0);
             color = Eigen::Vector4d(dis(generator), dis(generator), dis(generator), 0.5);
 
-
+            /** @brief Generate a random point **/
             std::uniform_real_distribution<double> dis_angle(-M_PI, M_PI);
             std::uniform_real_distribution<double> dis_height(height_list[0], height_list[1]);
             double rand_angle = dis_angle(generator);
@@ -218,21 +223,21 @@ class tbborrt_ros_node
             std::cout << "rand_angle = " << KBLU << rand_angle << KNRM << " " <<
                     "opp_rand_angle = " << KBLU << opp_rand_angle << KNRM << std::endl;
 
-            double h = _map_size / 2.0 * 1.5; // multiply with an expansion
-            start = Eigen::Vector3d(h * cos(rand_angle), 
+            double h = rrt_param.m_s / 2.0 * 1.5; // multiply with an expansion
+            Eigen::Vector3d start = Eigen::Vector3d(h * cos(rand_angle), 
                 h * sin(rand_angle), dis_height(generator));
-            end = Eigen::Vector3d(h * cos(opp_rand_angle), 
-                h * sin(opp_rand_angle), dis_height(generator));
+            // Eigen::Vector3d end = Eigen::Vector3d(h * cos(opp_rand_angle), 
+            //     h * sin(opp_rand_angle), dis_height(generator));
 
-            std::cout << "start_position = " << KBLU << start.transpose() << KNRM << " " <<
-                    "end_position = " << KBLU << end.transpose() << KNRM << " " <<
-                    "distance = " << KBLU << (start-end).norm() << KNRM << std::endl;
+            // std::cout << "start_position = " << KBLU << start.transpose() << KNRM << " " <<
+            //         "end_position = " << KBLU << end.transpose() << KNRM << " " <<
+            //         "distance = " << KBLU << (start-end).norm() << KNRM << std::endl;
 
-            rrt.set_parameters(_obstacle_threshold, _no_fly_zone, 
-            _runtime_error, _height_constrain, _sensor_range, _resolution);
-
+            // Let us start at the random start point
             current_point = start;
+            agent_step = max_velocity * simulation_step;
 
+            agent_timer.start();
             search_timer.start();
         }
 
@@ -246,6 +251,12 @@ class tbborrt_ros_node
 
         ~tbborrt_ros_node()
         {
+            // Clear all the points within the clouds
+            _full_cloud->points.clear();
+            _local_cloud->points.clear();
+
+            // Stop all the timers
+            agent_timer.stop();
             search_timer.stop();
         }
 

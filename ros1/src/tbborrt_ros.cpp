@@ -34,7 +34,6 @@ using namespace tbborrt_server;
 
 void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
 {
-    std::lock_guard<std::mutex> cloud_lock(cloud_mutex);
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     _full_cloud = pcl2_converter(*msg);
@@ -45,7 +44,7 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     sensor_msgs::PointCloud2 cloud_msg;
 
     Eigen::Vector3d dimension = Eigen::Vector3d(
-        _sensor_range, _sensor_range, _sensor_range);
+        rrt_param.s_r, rrt_param.s_r, rrt_param.s_r);
 
     Eigen::Vector3d min = current_point - dimension;
     Eigen::Vector3d max = current_point + dimension;
@@ -57,8 +56,6 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     box_filter.setInputCloud(_full_cloud);
     box_filter.filter(*_local_cloud);
 
-    last_pcl_msg = ros::Time::now();
-
     // Publish local cloud as a ros message
     pcl::toROSMsg(*_local_cloud, cloud_msg);
 
@@ -69,35 +66,50 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     return;
 }
 
-/** @brief Construct the search path from RRT search and from its shortened path */
-void tbborrt_ros_node::generate_search_path()
+void tbborrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    start_end.first = current_point;
-    start_end.second = end;
+    geometry_msgs::Point pos = *msg;
 
-    std::cout << "start_end.first = " << KBLU << 
-        start_end.first.transpose() << " " << KNRM << 
-        "start_end.second = " << KBLU << 
-        start_end.second.transpose() << " " << KNRM << 
+    rrt_param.s_e.first = current_point;
+    rrt_param.s_e.second = Eigen::Vector3d(
+        pos.x, pos.y, pos.z);
+
+    rrt.set_parameters(rrt_param, no_fly_zone);
+
+    received_command = true;
+
+    return;
+}
+
+/** @brief Construct the search path from RRT search and from its shortened path */
+void tbborrt_ros_node::generate_search_path()
+{    
+    rrt_param.s_e.first = current_point;
+    rrt_param.s_e.second = rrt_param.s_e.second;
+
+    std::cout << "rrt_param.s_e.first = " << KBLU << 
+        rrt_param.s_e.first.transpose() << " " << KNRM << 
+        "rrt_param.s_e.second = " << KBLU << 
+        rrt_param.s_e.second.transpose() << " " << KNRM << 
         std::endl;
     // Find a RRT path that is quick and stretches to the end point
-    vector<Eigen::Vector3d> path = rrt.find_path(previous_search_points, start_end);
+    vector<Eigen::Vector3d> path = rrt.find_path(global_search_path);
     
+    // Clear global_serach_path
+    global_search_path.clear();
     // If path gives an invalid value, execute some form of emergency
     if (path.empty())
     {
+        error_counter++;
+        std::cout << KBLU << "Error in finding path!" << KNRM << std::endl;
         return;
     }
 
     // Save global_path
-    global_search_path.clear();
+    // Note that global search path includes the current location the agent is at
     global_search_path = path;
-    previous_search_points.clear();
-    // Previous path does not consist of start point
-    for (int i = 1; i < global_search_path.size(); i++)
-        previous_search_points.push_back(global_search_path[i]);
 
 }
 
@@ -107,28 +119,17 @@ void tbborrt_ros_node::generate_search_path()
 bool tbborrt_ros_node::check_and_update_search(
     Eigen::Vector3d current)
 {
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
-    std::lock_guard<std::mutex> search_points_lock(search_points_mutex);
-
-    if (previous_search_points.empty())
+    // If it contains just 1 node which is its current point
+    if (global_search_path.size() == 1)
         return false;
-
-    // Copy previous search points
-    vector<Eigen::Vector3d> temporary_previous_points = previous_search_points;
-    temporary_previous_points.insert(
-        temporary_previous_points.begin(), current);
-
-    /** @brief Debug message **/
-    // std::cout << "temporary_previous_points.size() = " << KCYN << temporary_previous_points.size() << KNRM << 
-    //     " previous_search_points.size() = " << KCYN << previous_search_points.size() << KNRM << std::endl;
 
     // Check to see whether the new control point and the previous inputs
     // have any pointclouds lying inside
     int last_safe_idx = -1;
-    for (int i = 0; i < temporary_previous_points.size()-1; i++)
+    for (int i = 0; i < global_search_path.size()-1; i++)
     {
         if (!rrt.check_line_validity(
-            temporary_previous_points[i], temporary_previous_points[i+1]))
+            global_search_path[i], global_search_path[i+1]))
         {
             last_safe_idx = i;
             break;
@@ -137,28 +138,67 @@ bool tbborrt_ros_node::check_and_update_search(
 
     if (last_safe_idx >= 0)
     {
-        for (int i = last_safe_idx + 1; i < temporary_previous_points.size(); i++)
-            previous_search_points.erase(previous_search_points.end());
+        for (int i = last_safe_idx + 1; i < global_search_path.size(); i++)
+            global_search_path.erase(global_search_path.end());
         return false;
     }
     else
         return true;
 }
 
-void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
+void tbborrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
 {
-    if ((ros::Time::now() - last_pcl_msg).toSec() > 2.0)
+    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+
+    if (received_command && (int)(global_search_path.size()) != 0)
+    {
+        // Always use the point after the start point in global search path
+        Eigen::Vector3d displacement = global_search_path[1] - current_point;
+        while (displacement.norm() < agent_step && (int)global_search_path.size() > 1)
+        {
+            global_search_path.erase(global_search_path.begin()+1);
+            displacement = global_search_path[1] - current_point;
+        }
+
+        Eigen::Vector3d direction_vector = displacement / displacement.norm();
+
+        current_point += direction_vector * agent_step;
+        // std::cout << "current_point [" << KBLU << 
+        //     current_point.transpose() << KNRM << "]" << std::endl;
+
+        if ((int)(global_search_path.size()) == 1)
+            received_command = false;
+    }
+    
+    geometry_msgs::PoseStamped pose;
+    pose.header.frame_id = "world";
+    pose.pose.position.x = current_point.x();
+    pose.pose.position.y = current_point.y();
+    pose.pose.position.z = current_point.z();
+    pose_pub.publish(pose);
+
+    visualize_points(0.5, rrt_param.s_r*2);
+}
+
+void tbborrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
+{
+    if (!received_command)
         return;
 
-    std::lock_guard<std::mutex> cloud_lock(cloud_mutex);
+    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
-    /** @brief Start of RRT search process **/
 
-    rrt.update_octree(_local_cloud, current_point, end);
+    rrt.update_octree(_local_cloud, current_point, rrt_param.s_e.second);
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
+
+    // Update global path with current point
+    if (!global_search_path.empty())
+        global_search_path.erase(global_search_path.begin());
+    
+    global_search_path.insert(global_search_path.begin(), current_point);
 
     double update_check_time;
     // Check to see whether the previous data extents to the end
@@ -167,17 +207,8 @@ void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
     {
         update_check_time = duration<double>(system_clock::now() - 
             timer).count()*1000 - update_octree_time;
-        std::cout << KCYN << "Bypass" << KNRM << std::endl;
-        // Clear global path so that current point can be added
-        global_search_path.clear();
-        global_search_path.push_back(current_point);
-        for (int i = 0; i < previous_search_points.size(); i++)
-        {
-            global_search_path.push_back(previous_search_points[i]);
-        }
+        std::cout << KCYN << "Conducting Bypass" << KNRM << std::endl;
     }
-    // Check to see whether the previous data extents to the end
-    // If previous point last point does not connect to end point, there is no bypass
     else
     {
         update_check_time = duration<double>(system_clock::now() - 
@@ -193,43 +224,15 @@ void tbborrt_ros_node::run_search_timer(const ros::TimerEvent &)
         " update_check time taken = " << KGRN <<
         update_check_time << "ms" << KNRM << std::endl;
 
-    nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
-    g_rrt_points_pub.publish(global_path);
-
-    /** @brief End of RRT search process **/
-
-    // Project the point forward and find vector of travel
-    double step_size = 0.5;
-    bool delete_vector = false;
-    Eigen::Vector3d global_vector = Eigen::Vector3d::Zero();
-    for (int i = 1; i < global_search_path.size(); i++)
+    if (!global_search_path.empty())
     {
-        Eigen::Vector3d vect2 = global_search_path[i] - current_point;
-        Eigen::Vector3d vect2_dir = vect2 / vect2.norm();
-
-        if (vect2.norm() < step_size * 0.9)
-        {
-            delete_vector = true;
-            continue;
-        }
-
-        global_vector = vect2_dir;
-        break;
+        nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
+        g_rrt_points_pub.publish(global_path);
     }
-    if (delete_vector)
-        previous_search_points.erase(previous_search_points.begin());
+    else
+    {
+        std::cout << KRED << "no global path found!" << KNRM << std::endl;
+        return;
+    }
 
-    current_point += global_vector * step_size;
-    std::cout << "current_point [" << KBLU << 
-        current_point.transpose() << KNRM << "]" << std::endl;
-    
-    geometry_msgs::PoseStamped pose;
-    pose.header.frame_id = "world";
-    pose.pose.position.x = current_point.x();
-    pose.pose.position.y = current_point.y();
-    pose.pose.position.z = current_point.z();
-    pose_pub.publish(pose);
-
-    visualize_points(0.5, _sensor_range*2);
-    std::cout << std::endl;
 }
