@@ -18,7 +18,7 @@
     <param name="protected_zone" value="0.4"/>
 
     <param name="search_interval" value="0.5"/>
-    <param name="resolution" value="0.25"/>
+    <param name="resolution" value="0.75"/>
 
     <param name="map_size" value="$(arg map_size)"/>
     <param name="max_velocity" value="2.0"/>

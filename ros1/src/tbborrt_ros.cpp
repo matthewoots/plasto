@@ -78,6 +78,7 @@ void tbborrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 
     rrt.set_parameters(rrt_param, no_fly_zone);
 
+    global_search_path.clear();
     received_command = true;
 
     return;
@@ -85,10 +86,8 @@ void tbborrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 
 /** @brief Construct the search path from RRT search and from its shortened path */
 void tbborrt_ros_node::generate_search_path()
-{    
+{   
     rrt_param.s_e.first = current_point;
-    rrt_param.s_e.second = rrt_param.s_e.second;
-
     std::cout << "rrt_param.s_e.first = " << KBLU << 
         rrt_param.s_e.first.transpose() << " " << KNRM << 
         "rrt_param.s_e.second = " << KBLU << 
@@ -119,6 +118,7 @@ void tbborrt_ros_node::generate_search_path()
 bool tbborrt_ros_node::check_and_update_search(
     Eigen::Vector3d current)
 {
+    // std::cout << "Conducting check_and_update_search" << std::endl;
     // If it contains just 1 node which is its current point
     if (global_search_path.size() == 1)
         return false;
@@ -165,9 +165,14 @@ void tbborrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
         current_point += direction_vector * agent_step;
         // std::cout << "current_point [" << KBLU << 
         //     current_point.transpose() << KNRM << "]" << std::endl;
+        // std::cout << "global_search_path.size() [" << KBLU << 
+        //     global_search_path.size() << KNRM << "]" << std::endl;
 
         if ((int)(global_search_path.size()) == 1)
+        {
+            global_search_path.clear();
             received_command = false;
+        }
     }
     
     geometry_msgs::PoseStamped pose;
@@ -189,7 +194,7 @@ void tbborrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
 
-    rrt.update_octree(_local_cloud, current_point, rrt_param.s_e.second);
+    rrt.update_pose_and_octree(_local_cloud, current_point, rrt_param.s_e.second);
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
@@ -205,12 +210,13 @@ void tbborrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     // if previous point last point connects to end point, do bypass    
     if (check_and_update_search(current_point))
     {
+        // std::cout << KCYN << "Conducting bypass" << KNRM << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
             timer).count()*1000 - update_octree_time;
-        std::cout << KCYN << "Conducting Bypass" << KNRM << std::endl;
     }
     else
     {
+        // std::cout << "Conducting search" << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
             timer).count()*1000 - update_octree_time;
         generate_search_path();
