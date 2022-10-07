@@ -61,8 +61,19 @@ class lro_rrt_ros_node
 {
     private:
 
-        lro_rrt_server::lro_rrt_server_node rrt;
+        struct map_parameters
+        {
+            double z_s; // step for height 
+            double z_h; // calculated height due to fov
+            int z_i; // count for height interval 
+            double r_s; // angle step for the rays
+            double vfov;
+        };
+
+        lro_rrt_server::lro_rrt_server_node rrt, map;
         lro_rrt_server::lro_rrt_server_node::parameters rrt_param;
+        map_parameters m_p;
+        vector<Eigen::Vector3d> sensing_offset;
 
         std::mutex pose_update_mutex;
 
@@ -72,7 +83,7 @@ class lro_rrt_ros_node
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
         ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
         
-        pcl::PointCloud<pcl::PointXYZ>::Ptr _full_cloud, _local_cloud;
+        pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud;
 
         Eigen::Vector3d current_point, goal;
 
@@ -86,6 +97,7 @@ class lro_rrt_ros_node
         double max_velocity;
 
         bool received_command = false;
+        bool init_cloud = false;
 
         /** @brief Callbacks, mainly for loading pcl and commands **/
         void command_callback(const geometry_msgs::PointConstPtr& msg);
@@ -168,6 +180,8 @@ class lro_rrt_ros_node
             _nh.param<double>("map_size", rrt_param.m_s, -1.0);
             _nh.param<double>("max_velocity", max_velocity, -1.0);
 
+            _nh.param<double>("vfov", m_p.vfov, -1.0);
+
             std::vector<double> height_list;
             _nh.getParam("height", height_list);
             rrt_param.h_c.first = height_list[0];
@@ -237,6 +251,23 @@ class lro_rrt_ros_node
             current_point = start;
             agent_step = max_velocity * simulation_step;
 
+            uint ray_per_layer = 640;
+            m_p.z_s = rrt_param.r;
+            m_p.z_h = rrt_param.s_r * tan(m_p.vfov);
+            m_p.z_i = (int)floor((m_p.z_h * 2) / m_p.z_s);
+            m_p.r_s = 2 * M_PI / (double)ray_per_layer; 
+
+            for (int i = 0; i < m_p.z_i; i++)
+                for (uint j = 0; j < ray_per_layer; j++)
+                {
+                    Eigen::Vector3d q = Eigen::Vector3d(
+                        rrt_param.s_r * cos(j*m_p.r_s - M_PI),
+                        rrt_param.s_r * sin(j*m_p.r_s - M_PI),
+                        i*m_p.z_s - m_p.z_h
+                    );
+                    sensing_offset.push_back(q);
+                }
+
             agent_timer.start();
             search_timer.start();
         }
@@ -252,8 +283,8 @@ class lro_rrt_ros_node
         ~lro_rrt_ros_node()
         {
             // Clear all the points within the clouds
-            _full_cloud->points.clear();
-            _local_cloud->points.clear();
+            full_cloud->points.clear();
+            local_cloud->points.clear();
 
             // Stop all the timers
             agent_timer.stop();
@@ -274,6 +305,29 @@ class lro_rrt_ros_node
             return tmp_cloud;
         }
         
+         
+        pcl::PointCloud<pcl::PointXYZ>::Ptr raycast_pcl_w_fov(Eigen::Vector3d p)
+        {
+            pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
+
+            for (int i = 0; i < (int)sensing_offset.size(); i++)
+            {
+                Eigen::Vector3d intersect;
+                Eigen::Vector3d q = p + sensing_offset[i];
+                if (!map.check_approx_intersection_by_segment(
+                    p, q, (float)(rrt_param.r), intersect))
+                {
+                    pcl::PointXYZ add;
+                    add.x = intersect.x();
+                    add.y = intersect.y();
+                    add.z = intersect.z();
+                    tmp->points.push_back(add);
+                }
+            }
+
+            return tmp;
+
+        }
 };
 
 #endif

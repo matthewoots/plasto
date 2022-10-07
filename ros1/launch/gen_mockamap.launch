@@ -10,6 +10,8 @@
   <!--  box edge length, unit meter-->
   <param name="resolution" type="double" value="0.25"/>
 
+  <param name="circular" value="true"/>
+
   <!-- map size unit meter-->
   <param name="x_length" type="int" value="$(arg size)"/>
   <param name="y_length" type="int" value="$(arg size)"/>
@@ -26,8 +28,8 @@
     <!-- attenuation:   for fractal attenuation
                         typical: 0.0 ~ 0.5 -->
 
-    <param name="complexity"    type="double" value="0.025"/>
-    <param name="fill"          type="double" value="0.15"/>
+    <param name="complexity"    type="double" value="0.0225"/>
+    <param name="fill"          type="double" value="0.3"/>
     <param name="fractal"       type="int"    value="1"/>
     <param name="attenuation"   type="double" value="0.2"/>
 </node>

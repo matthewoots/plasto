@@ -11,19 +11,20 @@
 <node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
     <param name="sub_runtime_error" value="0.03"/>
     <param name="runtime_error" value="0.1"/>
-    <param name="simulation_step" value="0.025"/>
+    <param name="simulation_step" value="0.03"/>
 
-    <param name="sensor_range" value="4.0"/>
+    <param name="sensor_range" value="5.0"/>
     <param name="sensor_buffer_multiplier" value="1.5"/>
-    <param name="protected_zone" value="0.35"/>
+    <param name="protected_zone" value="0.6"/>
 
     <param name="search_interval" value="0.5"/>
-    <param name="resolution" value="0.50"/>
+    <param name="resolution" value="0.5"/>
 
     <param name="map_size" value="$(arg map_size)"/>
-    <param name="max_velocity" value="2.0"/>
+    <param name="max_velocity" value="1.5"/>
+    <param name="vfov" value="0.65"/>
 
-    <rosparam param="height"> [1.0, 5.0] </rosparam>
+    <rosparam param="height"> [1.0, 4.0] </rosparam>
     <rosparam param="no_fly_zone"> [] </rosparam>
 </node>
 

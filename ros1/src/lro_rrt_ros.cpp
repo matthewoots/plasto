@@ -34,35 +34,18 @@ using namespace lro_rrt_server;
 
 void lro_rrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
 {
+    // Callback once and save the pointcloud
+
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    _full_cloud = pcl2_converter(*msg);
+    if (!init_cloud)
+    {
+        init_cloud = true;
+        full_cloud = pcl2_converter(*msg);
+        map.set_parameters(rrt_param);
+        map.update_pose_and_octree(full_cloud, current_point, goal);
+    }
 
-    // Crop to simulate local sensing
-    pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
-    _local_cloud = output; // Reset local_cloud
-    sensor_msgs::PointCloud2 cloud_msg;
-
-    Eigen::Vector3d dimension = Eigen::Vector3d(
-        rrt_param.s_r, rrt_param.s_r, rrt_param.s_r);
-
-    Eigen::Vector3d min = current_point - dimension;
-    Eigen::Vector3d max = current_point + dimension;
-
-    pcl::CropBox<pcl::PointXYZ> box_filter;
-    box_filter.setMin(Eigen::Vector4f(min.x(), min.y(), min.z(), 1.0));
-    box_filter.setMax(Eigen::Vector4f(max.x(), max.y(), max.z(), 1.0));
-
-    box_filter.setInputCloud(_full_cloud);
-    box_filter.filter(*_local_cloud);
-
-    // Publish local cloud as a ros message
-    pcl::toROSMsg(*_local_cloud, cloud_msg);
-
-    cloud_msg.header.frame_id = "world";
-    cloud_msg.header.stamp = ros::Time::now();
-
-    local_pcl_pub.publish(cloud_msg);
     return;
 }
 
@@ -172,6 +155,36 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
             received_command = false;
         }
     }
+
+    // Crop to simulate local sensing
+    // pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
+    // local_cloud = output; // Reset local_cloud
+
+    // Eigen::Vector3d dimension = Eigen::Vector3d(
+    //     rrt_param.s_r, rrt_param.s_r, rrt_param.s_r);
+
+    // Eigen::Vector3d min = current_point - dimension;
+    // Eigen::Vector3d max = current_point + dimension;
+
+    // pcl::CropBox<pcl::PointXYZ> box_filter;
+    // box_filter.setMin(Eigen::Vector4f(min.x(), min.y(), min.z(), 1.0));
+    // box_filter.setMax(Eigen::Vector4f(max.x(), max.y(), max.z(), 1.0));
+
+    // box_filter.setInputCloud(full_cloud);
+    // box_filter.filter(*local_cloud);
+
+    time_point<std::chrono::system_clock> ray_timer = system_clock::now();
+    local_cloud = raycast_pcl_w_fov(current_point);
+    double ray_time = duration<double>(system_clock::now() - ray_timer).count();
+    std::cout << "raycast time (" << KBLU << ray_time * 1000 << KNRM << "ms)" << std::endl;
+
+    sensor_msgs::PointCloud2 cloud_msg;
+    // Publish local cloud as a ros message
+    pcl::toROSMsg(*local_cloud, cloud_msg);
+
+    cloud_msg.header.frame_id = "world";
+    cloud_msg.header.stamp = ros::Time::now();
+    local_pcl_pub.publish(cloud_msg);
     
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = "world";
@@ -192,7 +205,7 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
 
-    rrt.update_pose_and_octree(_local_cloud, current_point, goal);
+    rrt.update_pose_and_octree(local_cloud, current_point, goal);
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
