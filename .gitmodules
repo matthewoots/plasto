@@ -1,6 +1,6 @@
-[submodule "lib_lro_rrt"]
-	path = lib_lro_rrt
-	url = git@github.com:matthewoots/lib_lro_rrt.git
 [submodule "mockamap"]
 	path = mockamap
 	url = git@github.com:matthewoots/mockamap.git
+[submodule "lib_lro_rrt"]
+	path = lib_lro_rrt
+	url = git@github.com:matthewoots/lib_lro_rrt.git
