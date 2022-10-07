@@ -17,7 +17,7 @@
 */
 
 #include <ros/ros.h>
-#include "tbborrt_ros.h"
+#include "lro_rrt_ros.h"
 
 #define KNRM  "\033[0m"
 #define KRED  "\033[31m"
@@ -30,10 +30,10 @@
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "tbborrt_ros_node");
+    ros::init(argc, argv, "lro_rrt_ros_node");
     ros::NodeHandle nh("~");
     int threads = 2;
-    tbborrt_ros_node tbborrt_ros_node(nh);
+    lro_rrt_ros_node lro_rrt_ros_node(nh);
     ros::MultiThreadedSpinner spinner(threads);
     spinner.spin();
     return 0;

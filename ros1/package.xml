@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>tbborrt_ros</name>
+  <name>lro_rrt_ros</name>
   <version>0.0.0</version>
-  <description>tbborrt_ros</description>
+  <description>lro_rrt_ros</description>
   <maintainer email="matthewoots@gmail.com">Matthew Woo</maintainer>
   <license>TODO</license>
 

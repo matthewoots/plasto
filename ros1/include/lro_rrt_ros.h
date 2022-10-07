@@ -1,5 +1,5 @@
 /*
-* tbborrt_ros.h
+* lro_rrt_ros.h
 *
 * ---------------------------------------------------------------------
 * Copyright (C) 2022 Matthew (matthewoots at gmail.com)
@@ -15,10 +15,10 @@
 *  GNU General Public License for more details.
 * ---------------------------------------------------------------------
 */
-#ifndef TBBORRT_ROS_H
-#define TBBORRT_ROS_H
+#ifndef LRO_RRT_ROS_H
+#define LRO_RRT_ROS_H
 
-#include "tbborrt_server.h"
+#include "lro_rrt_server.h"
 
 #include <string>
 #include <thread>   
@@ -55,14 +55,14 @@
 
 using namespace Eigen;
 using namespace std;
-using namespace tbborrt_server;
+using namespace lro_rrt_server;
 
-class tbborrt_ros_node
+class lro_rrt_ros_node
 {
     private:
 
-        tbborrt_server::tbborrt_server_node rrt;
-        tbborrt_server::tbborrt_server_node::parameters rrt_param;
+        lro_rrt_server::lro_rrt_server_node rrt;
+        lro_rrt_server::lro_rrt_server_node::parameters rrt_param;
 
         std::mutex pose_update_mutex;
 
@@ -91,7 +91,7 @@ class tbborrt_ros_node
         void command_callback(const geometry_msgs::PointConstPtr& msg);
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
     
-        /** @brief Functions used in tbborrt **/
+        /** @brief Functions used in lro_rrt **/
         bool check_and_update_search(Eigen::Vector3d first_cp);
         void generate_search_path();
 
@@ -151,7 +151,7 @@ class tbborrt_ros_node
 
     public:
 
-        tbborrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
+        lro_rrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
             /** @brief ROS Params */
             _nh.param<double>("sub_runtime_error", rrt_param.r_e.first, -1.0);
@@ -188,9 +188,9 @@ class tbborrt_ros_node
             }
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
-                "/mock_map", 1,  boost::bind(&tbborrt_ros_node::pcl2_callback, this, _1));
+                "/mock_map", 1,  boost::bind(&lro_rrt_ros_node::pcl2_callback, this, _1));
             command_sub = _nh.subscribe<geometry_msgs::Point>(
-                "/goal", 1,  boost::bind(&tbborrt_ros_node::command_callback, this, _1));
+                "/goal", 1,  boost::bind(&lro_rrt_ros_node::command_callback, this, _1));
 
             /** @brief For debug */
             local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/local_map", 10);
@@ -203,10 +203,10 @@ class tbborrt_ros_node
             /** @brief Timer for the rrt search and agent */
 		    search_timer = _nh.createTimer(
                 ros::Duration(rrt_param.s_i), 
-                &tbborrt_ros_node::rrt_search_timer, this, false, false);
+                &lro_rrt_ros_node::rrt_search_timer, this, false, false);
             agent_timer = _nh.createTimer(
                 ros::Duration(0.01), 
-                &tbborrt_ros_node::agent_forward_timer, this, false, false);
+                &lro_rrt_ros_node::agent_forward_timer, this, false, false);
 
             /** @brief Choose a color for the trajectory using random values **/
             std::random_device dev;
@@ -249,7 +249,7 @@ class tbborrt_ros_node
         }
 
 
-        ~tbborrt_ros_node()
+        ~lro_rrt_ros_node()
         {
             // Clear all the points within the clouds
             _full_cloud->points.clear();

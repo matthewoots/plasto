@@ -1,5 +1,5 @@
 /*
-* ttborrt_ros.cpp
+* lro_rrt_ros.cpp
 *
 * ---------------------------------------------------------------------
 * Copyright (C) 2022 Matthew (matthewoots at gmail.com)
@@ -16,7 +16,7 @@
 * ---------------------------------------------------------------------
 */
 
-#include "tbborrt_ros.h"
+#include "lro_rrt_ros.h"
 #include <pcl/filters/crop_box.h>
 
 #define KNRM  "\033[0m"
@@ -30,9 +30,9 @@
 
 using namespace std;
 using namespace Eigen;
-using namespace tbborrt_server;
+using namespace lro_rrt_server;
 
-void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
+void lro_rrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
@@ -66,7 +66,7 @@ void tbborrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
     return;
 }
 
-void tbborrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
+void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
@@ -85,7 +85,7 @@ void tbborrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 }
 
 /** @brief Construct the search path from RRT search and from its shortened path */
-void tbborrt_ros_node::generate_search_path()
+void lro_rrt_ros_node::generate_search_path()
 {   
     rrt_param.s_e.first = current_point;
     std::cout << "rrt_param.s_e.first = " << KBLU << 
@@ -115,7 +115,7 @@ void tbborrt_ros_node::generate_search_path()
 /** @brief Use this function wisely, since check and update may cause an infinite loop
  * If a bad data is given to the rrt node and it cannot complete the validity check
 */
-bool tbborrt_ros_node::check_and_update_search(
+bool lro_rrt_ros_node::check_and_update_search(
     Eigen::Vector3d current)
 {
     // std::cout << "Conducting check_and_update_search" << std::endl;
@@ -146,7 +146,7 @@ bool tbborrt_ros_node::check_and_update_search(
         return true;
 }
 
-void tbborrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
+void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
@@ -185,7 +185,7 @@ void tbborrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
     visualize_points(0.5, rrt_param.s_r*2);
 }
 
-void tbborrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
+void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 {
     if (!received_command)
         return;
