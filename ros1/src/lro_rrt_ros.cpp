@@ -72,11 +72,10 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 
     geometry_msgs::Point pos = *msg;
 
-    rrt_param.s_e.first = current_point;
-    rrt_param.s_e.second = Eigen::Vector3d(
-        pos.x, pos.y, pos.z);
+    goal = Eigen::Vector3d(pos.x, pos.y, pos.z);
 
-    rrt.set_parameters(rrt_param, no_fly_zone);
+    if (!rrt.initialized())
+        rrt.set_parameters(rrt_param);
 
     global_search_path.clear();
     received_command = true;
@@ -86,12 +85,11 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 
 /** @brief Construct the search path from RRT search and from its shortened path */
 void lro_rrt_ros_node::generate_search_path()
-{   
-    rrt_param.s_e.first = current_point;
-    std::cout << "rrt_param.s_e.first = " << KBLU << 
-        rrt_param.s_e.first.transpose() << " " << KNRM << 
-        "rrt_param.s_e.second = " << KBLU << 
-        rrt_param.s_e.second.transpose() << " " << KNRM << 
+{
+    std::cout << "current (" << KBLU << 
+        current_point.transpose() << ") " << KNRM << 
+        "goal (" << KBLU << 
+        goal.transpose() << ") " << KNRM << 
         std::endl;
     // Find a RRT path that is quick and stretches to the end point
     vector<Eigen::Vector3d> path = rrt.find_path(global_search_path);
@@ -194,7 +192,7 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
 
-    rrt.update_pose_and_octree(_local_cloud, current_point, rrt_param.s_e.second);
+    rrt.update_pose_and_octree(_local_cloud, current_point, goal);
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;

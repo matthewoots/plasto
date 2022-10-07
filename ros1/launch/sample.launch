@@ -3,12 +3,12 @@
 <arg name="map_size" value="30" />
 <arg name="height_size" value="7" />
 
-<include file="$(find tbborrt_ros)/launch/gen_mockamap.launch">
+<include file="$(find lro_rrt_ros)/launch/gen_mockamap.launch">
     <arg name="size" value="$(arg map_size)" />
     <arg name="height" value="$(arg height_size)" />
 </include>
 
-<node pkg="tbborrt_ros" type="tbborrt_ros_node" name="tbborrt_ros_node" output="screen">
+<node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
     <param name="sub_runtime_error" value="0.03"/>
     <param name="runtime_error" value="0.1"/>
     <param name="simulation_step" value="0.025"/>
@@ -29,6 +29,6 @@
 
 <!-- Launch RViz with the demo configuration -->
 <node name="rviz" pkg="rviz" type="rviz"
-    args="-d $(find tbborrt_ros)/rviz/mockamap.rviz"/>
+    args="-d $(find lro_rrt_ros)/rviz/mockamap.rviz"/>
 
 </launch>

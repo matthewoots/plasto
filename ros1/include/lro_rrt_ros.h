@@ -74,7 +74,7 @@ class lro_rrt_ros_node
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr _full_cloud, _local_cloud;
 
-        Eigen::Vector3d current_point;
+        Eigen::Vector3d current_point, goal;
 
         vector<Eigen::Vector3d> global_search_path;
         vector<Eigen::Vector4d> no_fly_zone;
