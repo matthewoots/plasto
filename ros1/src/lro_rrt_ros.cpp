@@ -36,13 +36,15 @@ void lro_rrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
 {
     // Callback once and save the pointcloud
 
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     if (!init_cloud)
     {
         init_cloud = true;
         full_cloud = pcl2_converter(*msg);
-        map.set_parameters(rrt_param);
+        lro_rrt_server::lro_rrt_server_node::parameters map_param = rrt_param;
+        map_param.r = m_p.m_r;
+        map.set_parameters(map_param);
         map.update_pose_and_octree(full_cloud, current_point, goal);
     }
 

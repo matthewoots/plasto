@@ -2,6 +2,7 @@
 
 <arg name="map_size" value="30" />
 <arg name="height_size" value="7" />
+<arg name="protected_zone" value="0.64"/>
 
 <include file="$(find lro_rrt_ros)/launch/gen_mockamap.launch">
     <arg name="size" value="$(arg map_size)" />
@@ -11,18 +12,18 @@
 <node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
     <param name="sub_runtime_error" value="0.03"/>
     <param name="runtime_error" value="0.1"/>
-    <param name="simulation_step" value="0.03"/>
+    <param name="simulation_step" value="0.04"/>
 
     <param name="sensor_range" value="5.0"/>
-    <param name="sensor_buffer_multiplier" value="1.5"/>
-    <param name="protected_zone" value="0.6"/>
+    <param name="sensor_buffer_multiplier" value="1.2"/>
 
-    <param name="search_interval" value="0.5"/>
-    <param name="resolution" value="0.5"/>
+    <param name="search_interval" value="0.4"/>
+    <param name="map_resolution" value="0.32"/>
+    <param name="planning_resolution" value="$(arg protected_zone)"/>
 
     <param name="map_size" value="$(arg map_size)"/>
-    <param name="max_velocity" value="1.5"/>
-    <param name="vfov" value="0.65"/>
+    <param name="max_velocity" value="2"/>
+    <param name="vfov" value="0.9"/>
 
     <rosparam param="height"> [1.0, 4.0] </rosparam>
     <rosparam param="no_fly_zone"> [] </rosparam>

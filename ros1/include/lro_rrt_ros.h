@@ -67,6 +67,7 @@ class lro_rrt_ros_node
             double z_h; // calculated height due to fov
             int z_i; // count for height interval 
             double r_s; // angle step for the rays
+            double m_r; // map resolution
             double vfov;
         };
 
@@ -172,10 +173,11 @@ class lro_rrt_ros_node
 
             _nh.param<double>("sensor_range", rrt_param.s_r, -1.0);
             _nh.param<double>("sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
-            _nh.param<double>("protected_zone", rrt_param.p_z, -1.0);
+            // _nh.param<double>("protected_zone", rrt_param.p_z, -1.0);
 
             _nh.param<double>("search_interval", rrt_param.s_i, -1.0);  
-            _nh.param<double>("resolution", rrt_param.r, -1.0); 
+            _nh.param<double>("planning_resolution", rrt_param.r, -1.0);
+            _nh.param<double>("map_resolution", m_p.m_r, -1.0);  
 
             _nh.param<double>("map_size", rrt_param.m_s, -1.0);
             _nh.param<double>("max_velocity", max_velocity, -1.0);
@@ -251,10 +253,10 @@ class lro_rrt_ros_node
             current_point = start;
             agent_step = max_velocity * simulation_step;
 
-            uint ray_per_layer = 640;
-            m_p.z_s = rrt_param.r;
+            uint ray_per_layer = 480;
+            m_p.z_s = m_p.m_r;
             m_p.z_h = rrt_param.s_r * tan(m_p.vfov);
-            m_p.z_i = (int)floor((m_p.z_h * 2) / m_p.z_s);
+            m_p.z_i = (int)floor((m_p.z_h * 2.0) / m_p.z_s);
             m_p.r_s = 2 * M_PI / (double)ray_per_layer; 
 
             for (int i = 0; i < m_p.z_i; i++)
@@ -315,7 +317,7 @@ class lro_rrt_ros_node
                 Eigen::Vector3d intersect;
                 Eigen::Vector3d q = p + sensing_offset[i];
                 if (!map.check_approx_intersection_by_segment(
-                    p, q, (float)(rrt_param.r), intersect))
+                    p, q, (float)(m_p.m_r), intersect))
                 {
                     pcl::PointXYZ add;
                     add.x = intersect.x();
