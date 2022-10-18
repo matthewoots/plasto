@@ -32,9 +32,8 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "lro_rrt_ros_node");
     ros::NodeHandle nh("~");
-    int threads = 2;
     lro_rrt_ros_node lro_rrt_ros_node(nh);
-    ros::MultiThreadedSpinner spinner(threads);
+    ros::MultiThreadedSpinner spinner(lro_rrt_ros_node.threads);
     spinner.spin();
     return 0;
 }

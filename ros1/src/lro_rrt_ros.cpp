@@ -72,7 +72,7 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 void lro_rrt_ros_node::generate_search_path()
 {
     std::cout << "current (" << KBLU << 
-        current_point.transpose() << ") " << KNRM << 
+        current_point.transpose() << KNRM << ") " << 
         "goal (" << KBLU << 
         goal.transpose() << ") " << KNRM << 
         std::endl;
@@ -129,34 +129,9 @@ bool lro_rrt_ros_node::check_and_update_search(
         return true;
 }
 
-void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
+void lro_rrt_ros_node::local_map_timer(const ros::TimerEvent &)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
-
-    if (received_command && (int)(global_search_path.size()) != 0)
-    {
-        // Always use the point after the start point in global search path
-        Eigen::Vector3d displacement = global_search_path[1] - current_point;
-        while (displacement.norm() < agent_step && (int)global_search_path.size() > 1)
-        {
-            global_search_path.erase(global_search_path.begin()+1);
-            displacement = global_search_path[1] - current_point;
-        }
-
-        Eigen::Vector3d direction_vector = displacement / displacement.norm();
-
-        current_point += direction_vector * agent_step;
-        // std::cout << "current_point [" << KBLU << 
-        //     current_point.transpose() << KNRM << "]" << std::endl;
-        // std::cout << "global_search_path.size() [" << KBLU << 
-        //     global_search_path.size() << KNRM << "]" << std::endl;
-
-        if ((int)(global_search_path.size()) == 1)
-        {
-            global_search_path.clear();
-            received_command = false;
-        }
-    }
 
     // Crop to simulate local sensing
     // pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
@@ -176,9 +151,22 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
     // box_filter.filter(*local_cloud);
 
     time_point<std::chrono::system_clock> ray_timer = system_clock::now();
-    local_cloud = raycast_pcl_w_fov(current_point);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr local_cloud_current = raycast_pcl_w_fov(current_point);
     double ray_time = duration<double>(system_clock::now() - ray_timer).count();
-    std::cout << "raycast time (" << KBLU << ray_time * 1000 << KNRM << "ms)" << std::endl;
+    // std::cout << "raycast time (" << KBLU << ray_time * 1000 << KNRM << "ms)" << std::endl;
+
+    if (local_cloud_accumulated.size() > m_p.m_a)
+        local_cloud_accumulated.erase(local_cloud_accumulated.begin());
+    
+    local_cloud_accumulated.push_back(local_cloud_current);
+
+    local_cloud->points.clear();
+
+    for (int i = 0; i < (int)local_cloud_accumulated.size(); i++)
+        *local_cloud += *(local_cloud_accumulated[i]);
+    
+    double ray_n_acc_time = duration<double>(system_clock::now() - ray_timer).count();
+    // std::cout << "raycast and accumulation time (" << KBLU << ray_n_acc_time * 1000 << KNRM << "ms)" << std::endl;
 
     sensor_msgs::PointCloud2 cloud_msg;
     // Publish local cloud as a ros message
@@ -187,6 +175,46 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
     cloud_msg.header.frame_id = "world";
     cloud_msg.header.stamp = ros::Time::now();
     local_pcl_pub.publish(cloud_msg);
+
+}
+
+void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
+{
+    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+
+    if (received_command && (int)(global_search_path.size()) != 0 && valid)
+    {
+        // Always use the point after the start point in global search path
+        // Eigen::Vector3d displacement = global_search_path[1] - current_point;
+        // while (displacement.norm() < agent_step && (int)global_search_path.size() > 1)
+        // {
+        //     global_search_path.erase(global_search_path.begin()+1);
+        //     displacement = global_search_path[1] - current_point;
+        // }
+
+        // Eigen::Vector3d direction_vector = displacement / displacement.norm();
+
+        // current_point += direction_vector * agent_step;
+
+        bspline_trajectory::nbs_pva_state_3d state_3d;
+        state_3d = b_t.get_nbspline_3d(
+            degree, b_p.t_p_v, b_p.c_p_v, system_clock::now(), traj_start_time);
+        current_point = state_3d.pos;
+
+        // std::cout << duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() << "s" << std::endl;
+
+        if (global_search_path.size() > 2 && 
+            (global_search_path[1] - current_point).norm() < 1.0)
+            global_search_path.erase(global_search_path.begin()+1);
+
+        // if ((int)(global_search_path.size()) == 1)
+        if (duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() < 0.10)
+        {
+            global_search_path.clear();
+            received_command = false;
+            b_p = {};
+        }
+    }
     
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = "world";
@@ -207,6 +235,10 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
 
+    bool bypass = false;
+
+    // RRT Search Module
+
     rrt.update_pose_and_octree(local_cloud, current_point, goal);
 
     double update_octree_time = duration<double>(system_clock::now() - 
@@ -226,6 +258,7 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
         // std::cout << KCYN << "Conducting bypass" << KNRM << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
             timer).count()*1000 - update_octree_time;
+        bypass = true;
     }
     else
     {
@@ -251,7 +284,115 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     else
     {
         std::cout << KRED << "no global path found!" << KNRM << std::endl;
+        valid = false;
         return;
     }
 
+    // Non-Uniform Bspline
+    // Only update if we have done a new RRT search
+    if (!bypass)
+    {
+        // tmp_time_waypoint is the duration from the current time point
+        vector<double> tmp_time_waypoint;
+        vector<t_p_sc> tmp_time;
+        vector<Eigen::Vector3d> tmp_control_points, tmp_global_search_path;
+        
+        tmp_global_search_path.insert(
+            tmp_global_search_path.begin(), global_search_path.begin()+1, global_search_path.end());
+
+        b_t.distribute_3d_control_points(
+            degree, global_search_path[0], tmp_global_search_path, max_velocity,
+            default_knot_spacing, tmp_time_waypoint, tmp_control_points);
+        
+        // If there are no previous knots, that means we need to clamp the start
+        // We also do not have a time stamp set yet
+        if (b_p.c_p_v.empty())
+        {
+            std::cout << KRED << "No previous control points!" << KNRM << std::endl;
+            Eigen::Vector3d s_p = tmp_control_points[0];
+            double s_t = tmp_time_waypoint[0];
+            double e_t = tmp_time_waypoint[tmp_time_waypoint.size()-1];
+
+            tmp_time_waypoint.insert(
+                tmp_time_waypoint.begin(), s_t);
+            tmp_time_waypoint.insert(
+                tmp_time_waypoint.end(), e_t);
+
+            // Clamping the start point
+            for (int i = 0; i < degree; i++)
+            {
+                tmp_control_points.insert(
+                    tmp_control_points.begin(), tmp_control_points[0]);
+                tmp_time_waypoint.insert(
+                    tmp_time_waypoint.begin(), s_t);
+            }
+
+            // Since there is no previous time points to take reference from
+            // We start the trajectory time here
+            traj_start_time = system_clock::now();
+
+            for (int i = 0; i < (int)tmp_time_waypoint.size(); i++)
+            {
+                int t_s = (int)round(tmp_time_waypoint[i] * 1000.0);
+                tmp_time.push_back(traj_start_time + milliseconds(t_s));
+            }
+        }
+        // Else there are previous knots and control points present
+        else
+        {
+            t_p_sc found;
+            int index;
+            // Do not update if no nearest knot from the previous vector
+            if (!b_t.find_nearest_knot(
+                system_clock::now(), b_p.t_p_v, found, index))
+            {
+                valid = false;
+                return;
+            }
+
+            // Do not update if there are not enough points before
+            if (index - (degree-1) < 0 || index + degree > (b_p.t_p_v.size()-1))
+                return;
+
+            // Add previous c_p to beginning of the vector
+            // for 3th degree i-2 i-1 i i+1
+            for (int i = index - 1; i >= index - (degree-1); i--)
+            {
+                tmp_control_points.insert(
+                    tmp_control_points.begin(), b_p.c_p_v[i]);
+            }
+
+            // Add previous t_p to beginning of the vector
+            // for 3th degree i-2 i-1 i i+1 i+2 i+3
+            for (int i = index + degree - 2; i >= index - (degree-1); i--)
+            {
+                tmp_time.insert(
+                    tmp_time.begin(), b_p.t_p_v[i]);
+            } 
+
+            t_p_sc base = b_p.t_p_v[index + degree - 2];
+
+            for (int i = 0; i < (int)tmp_time_waypoint.size(); i++)
+            {
+                int t_s = (int)round(tmp_time_waypoint[i] * 1000.0);
+                tmp_time.push_back(base + milliseconds(t_s));
+            }
+        }
+        
+        // Clamping the end point
+        for (int i = 0; i < degree; i++)
+        {
+            int last_index_cp = tmp_control_points.size()-1;
+            int last_index_tp = tmp_time.size()-1;
+            tmp_control_points.insert(
+                tmp_control_points.end(), tmp_control_points[last_index_cp]);
+            tmp_time.insert(
+                tmp_time.end(), tmp_time[last_index_tp]);
+        }
+
+        b_p.c_p_v = tmp_control_points;
+        b_p.t_p_v = tmp_time;
+    }
+
+    valid = true;
 }

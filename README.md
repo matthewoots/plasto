@@ -8,8 +8,11 @@ Some benefits in this module
 - This search adopts the same mindset as https://github.com/mit-acl/faster where the search will always return with a solution, as the search takes into account the local environment
 - Using `mockamap` from `HKUST` https://github.com/HKUST-Aerial-Robotics/mockamap
 - Using a "LIDAR" kind of sensor, that returns the surface of the terrain, this utilizes the modified octree function from `lib_lro_rrt`. `raycast time (10.8249ms)` with 640 lines
+- Using `libnbspline` which provides a smooth trajectory
 
-[<img src="rrt.gif" width="500"/>](rrt.gif)
+| preview | random_fov |
+| :--: | :--: |
+| [<img src="lro_rrt.gif" width="500"/>](lro_rrt.gif) | [<img src="lro_rrt_range.jpg" width="450"/>](lro_rrt_range.jpg) |
 
 ## Setup
 ```bash

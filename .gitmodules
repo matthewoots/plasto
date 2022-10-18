@@ -4,3 +4,6 @@
 [submodule "lib_lro_rrt"]
 	path = lib_lro_rrt
 	url = git@github.com:matthewoots/lib_lro_rrt.git
+[submodule "libnbspline"]
+	path = libnbspline
+	url = git@github.com:matthewoots/libnbspline.git

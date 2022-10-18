@@ -38,6 +38,7 @@ link_directories(${PCL_LIBRARY_DIRS})
 # how to add external libraries not as subdirectory
 # https://github.com/SRombauts/SQLiteCpp/issues/250#issuecomment-569876565
 add_subdirectory(../lib_lro_rrt lro_rrt)
+add_subdirectory(../libnbspline nbspline)
 
 add_executable(${PROJECT_NAME}_node 
     src/main.cpp
@@ -58,4 +59,5 @@ add_dependencies(${PROJECT_NAME}_node
 target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}
   lro_rrt
+  nbspline
 )

@@ -19,6 +19,7 @@
 #define LRO_RRT_ROS_H
 
 #include "lro_rrt_server.h"
+#include "nbspline.h"
 
 #include <string>
 #include <thread>   
@@ -55,7 +56,11 @@
 
 using namespace Eigen;
 using namespace std;
+using namespace std::chrono; // nanoseconds, system_clock, seconds
 using namespace lro_rrt_server;
+using namespace nbspline;
+
+typedef time_point<std::chrono::system_clock> t_p_sc; // giving a typename
 
 class lro_rrt_ros_node
 {
@@ -68,13 +73,24 @@ class lro_rrt_ros_node
             int z_i; // count for height interval 
             double r_s; // angle step for the rays
             double m_r; // map resolution
+            uint r_p_l; // ray per layer
             double vfov;
+            int m_a; // map accumulation
+        };
+
+        struct bspline_parameters
+        {
+            vector<Eigen::Vector3d> c_p_v; // control point vector
+            vector<t_p_sc> t_p_v; // time point vector
         };
 
         lro_rrt_server::lro_rrt_server_node rrt, map;
         lro_rrt_server::lro_rrt_server_node::parameters rrt_param;
         map_parameters m_p;
         vector<Eigen::Vector3d> sensing_offset;
+
+        bspline_parameters b_p; // current bspline parameters
+        nbspline::bspline_trajectory b_t;
 
         std::mutex pose_update_mutex;
 
@@ -85,6 +101,7 @@ class lro_rrt_ros_node
         ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud;
+        vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> local_cloud_accumulated;
 
         Eigen::Vector3d current_point, goal;
 
@@ -93,9 +110,15 @@ class lro_rrt_ros_node
 
         Eigen::Vector4d color;
 
-        double simulation_step;
-        double agent_step;
+        double simulation_hz, map_hz;
+        // double agent_step;
         double max_velocity;
+        double default_knot_spacing;
+        int degree;
+        double duration_committed;
+        bool valid;
+
+        t_p_sc traj_start_time;
 
         bool received_command = false;
         bool init_cloud = false;
@@ -109,9 +132,10 @@ class lro_rrt_ros_node
         void generate_search_path();
 
         /** @brief Timers for searching and agent movement **/
-        ros::Timer search_timer, agent_timer;
+        ros::Timer search_timer, agent_timer, map_timer;
         void rrt_search_timer(const ros::TimerEvent &);
         void agent_forward_timer(const ros::TimerEvent &);
+        void local_map_timer(const ros::TimerEvent &);
 
         int error_counter;
 
@@ -164,33 +188,37 @@ class lro_rrt_ros_node
 
     public:
 
+        int threads;
+
         lro_rrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
             /** @brief ROS Params */
-            _nh.param<double>("sub_runtime_error", rrt_param.r_e.first, -1.0);
-            _nh.param<double>("runtime_error", rrt_param.r_e.second, -1.0);
-            _nh.param<double>("simulation_step", simulation_step, -1.0);
 
-            _nh.param<double>("sensor_range", rrt_param.s_r, -1.0);
-            _nh.param<double>("sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
-            // _nh.param<double>("protected_zone", rrt_param.p_z, -1.0);
+            int rpl;
+            std::vector<double> search_limit_hfov_list, 
+                search_limit_vfov_list, height_list, no_fly_zone_list;
 
-            _nh.param<double>("search_interval", rrt_param.s_i, -1.0);  
-            _nh.param<double>("planning_resolution", rrt_param.r, -1.0);
-            _nh.param<double>("map_resolution", m_p.m_r, -1.0);  
+            _nh.param<int>("ros/threads", threads, -1);
+            _nh.param<double>("ros/simulation_hz", simulation_hz, -1.0);
+            _nh.param<double>("ros/map_hz", map_hz, -1.0);
 
-            _nh.param<double>("map_size", rrt_param.m_s, -1.0);
-            _nh.param<double>("max_velocity", max_velocity, -1.0);
-
-            _nh.param<double>("vfov", m_p.vfov, -1.0);
-
-            std::vector<double> height_list;
-            _nh.getParam("height", height_list);
+            _nh.param<double>("planning/sub_runtime_error", rrt_param.r_e.first, -1.0);
+            _nh.param<double>("planning/runtime_error", rrt_param.r_e.second, -1.0);
+            _nh.param<double>("planning/sensor_range", rrt_param.s_r, -1.0);
+            _nh.param<double>("planning/sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
+            _nh.param<double>("planning/interval", rrt_param.s_i, -1.0);  
+            _nh.param<double>("planning/resolution", rrt_param.r, -1.0);
+            _nh.getParam("planning/search_limit_hfov", search_limit_hfov_list);
+            rrt_param.s_l_h.first = search_limit_hfov_list[0];
+            rrt_param.s_l_h.second = search_limit_hfov_list[1];
+            _nh.getParam("planning/search_limit_vfov", search_limit_vfov_list);
+            rrt_param.s_l_v.first = search_limit_vfov_list[0];
+            rrt_param.s_l_v.second = search_limit_vfov_list[1];
+            _nh.param<double>("planning/scaled_min_dist_from_node", rrt_param.s_d_n, -1.0);
+            _nh.getParam("planning/height", height_list);
             rrt_param.h_c.first = height_list[0];
             rrt_param.h_c.second = height_list[1];
-
-            std::vector<double> no_fly_zone_list;
-            _nh.getParam("no_fly_zone", no_fly_zone_list);
+            _nh.getParam("planning/no_fly_zone", no_fly_zone_list);
             if (!no_fly_zone_list.empty())
             {
                 for (int i = 0; i < (int)no_fly_zone_list.size() / 4; i++)
@@ -202,6 +230,18 @@ class lro_rrt_ros_node
                         no_fly_zone_list[3+i*4])
                     );
             }
+
+            _nh.param<double>("map/resolution", m_p.m_r, -1.0);
+            _nh.param<int>("map/ray_per_layer", rpl, 1);
+            _nh.param<double>("map/size", rrt_param.m_s, -1.0);
+            _nh.param<double>("map/max_velocity", max_velocity, -1.0);
+            _nh.param<double>("map/vfov", m_p.vfov, -1.0);
+            _nh.param<int>("map/pcl_accumulation", m_p.m_a, -1);
+            m_p.r_p_l = (uint)rpl;
+
+            _nh.param<double>("bspline/default_knot_spacing", default_knot_spacing, -1.0);
+            _nh.param<int>("bspline/degree", degree, -1);
+            _nh.param<double>("bspline/duration_committed", duration_committed, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
                 "/mock_map", 1,  boost::bind(&lro_rrt_ros_node::pcl2_callback, this, _1));
@@ -221,8 +261,11 @@ class lro_rrt_ros_node
                 ros::Duration(rrt_param.s_i), 
                 &lro_rrt_ros_node::rrt_search_timer, this, false, false);
             agent_timer = _nh.createTimer(
-                ros::Duration(0.01), 
+                ros::Duration(1/simulation_hz), 
                 &lro_rrt_ros_node::agent_forward_timer, this, false, false);
+            map_timer = _nh.createTimer(
+                ros::Duration(1/map_hz), 
+                &lro_rrt_ros_node::local_map_timer, this, false, false);
 
             /** @brief Choose a color for the trajectory using random values **/
             std::random_device dev;
@@ -251,9 +294,9 @@ class lro_rrt_ros_node
 
             // Let us start at the random start point
             current_point = start;
-            agent_step = max_velocity * simulation_step;
+            // agent_step = max_velocity * 1/simulation_hz;
 
-            uint ray_per_layer = 480;
+            uint ray_per_layer = m_p.r_p_l;
             m_p.z_s = m_p.m_r;
             m_p.z_h = rrt_param.s_r * tan(m_p.vfov);
             m_p.z_i = (int)floor((m_p.z_h * 2.0) / m_p.z_s);
@@ -269,9 +312,13 @@ class lro_rrt_ros_node
                     );
                     sensing_offset.push_back(q);
                 }
+            
+            local_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
+                    new pcl::PointCloud<pcl::PointXYZ>());
 
             agent_timer.start();
             search_timer.start();
+            map_timer.start();
         }
 
         double constrain_to_pi(double x){
@@ -291,6 +338,7 @@ class lro_rrt_ros_node
             // Stop all the timers
             agent_timer.stop();
             search_timer.stop();
+            map_timer.stop();
         }
 
         /** @brief Convert point cloud from ROS sensor message to pcl point ptr **/
@@ -317,7 +365,7 @@ class lro_rrt_ros_node
                 Eigen::Vector3d intersect;
                 Eigen::Vector3d q = p + sensing_offset[i];
                 if (!map.check_approx_intersection_by_segment(
-                    p, q, (float)(m_p.m_r), intersect))
+                    p, q, (float)(m_p.m_r), intersect, "fast"))
                 {
                     pcl::PointXYZ add;
                     add.x = intersect.x();
