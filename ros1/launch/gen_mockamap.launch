@@ -2,13 +2,14 @@
 
 <arg name="size" default="" />
 <arg name="height" default="" />
+<arg name="resolution" default="" />
 
 <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
   <param name="seed" type="int" value="511"/>
   <param name="update_freq" type="double" value="3.0"/>
 
   <!--  box edge length, unit meter-->
-  <param name="resolution" type="double" value="0.25"/>
+  <param name="resolution" value="$(arg resolution)"/>
 
   <param name="circular" value="true"/>
 

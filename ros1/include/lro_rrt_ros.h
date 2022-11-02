@@ -68,13 +68,16 @@ class lro_rrt_ros_node
 
         struct map_parameters
         {
-            double z_s; // step for height 
-            double z_h; // calculated height due to fov
-            int z_i; // count for height interval 
-            double r_s; // angle step for the rays
+            double h_d; // horizontal fov length
+            double v_d; // vertical fov length
+            int h_p; // horizontal pixel
+            int v_p; // vertical pixel
+            double h_s; // angle step for horizontal
+            double v_s; // angle step for vertical
             double m_r; // map resolution
             uint r_p_l; // ray per layer
             double vfov;
+            double hfov;
             int m_a; // map accumulation
         };
 
@@ -82,6 +85,13 @@ class lro_rrt_ros_node
         {
             vector<Eigen::Vector3d> c_p_v; // control point vector
             vector<t_p_sc> t_p_v; // time point vector
+        };
+
+        struct orientation
+        {
+            Eigen::Vector3d e; // euler angles
+            Eigen::Quaterniond q; // quaternion
+            Eigen::Matrix3d r; // rotation matrix
         };
 
         lro_rrt_server::lro_rrt_server_node rrt, map;
@@ -117,6 +127,7 @@ class lro_rrt_ros_node
         int degree;
         double duration_committed;
         bool valid;
+        orientation orientation;
 
         t_p_sc traj_start_time;
 
@@ -128,7 +139,7 @@ class lro_rrt_ros_node
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
     
         /** @brief Functions used in lro_rrt **/
-        bool check_and_update_search(Eigen::Vector3d first_cp);
+        bool check_and_update_search();
         void generate_search_path();
 
         /** @brief Timers for searching and agent movement **/
@@ -136,6 +147,9 @@ class lro_rrt_ros_node
         void rrt_search_timer(const ros::TimerEvent &);
         void agent_forward_timer(const ros::TimerEvent &);
         void local_map_timer(const ros::TimerEvent &);
+
+        void calc_uav_orientation(
+            Eigen::Vector3d acc, double yaw_rad, Eigen::Quaterniond &q, Eigen::Matrix3d &r);
 
         int error_counter;
 
@@ -232,12 +246,13 @@ class lro_rrt_ros_node
             }
 
             _nh.param<double>("map/resolution", m_p.m_r, -1.0);
-            _nh.param<int>("map/ray_per_layer", rpl, 1);
+            _nh.param<int>("map/hpixel", m_p.h_p, -1);
+            _nh.param<int>("map/vpixel", m_p.v_p, -1);
             _nh.param<double>("map/size", rrt_param.m_s, -1.0);
             _nh.param<double>("map/max_velocity", max_velocity, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
+            _nh.param<double>("map/hfov", m_p.hfov, -1.0);
             _nh.param<int>("map/pcl_accumulation", m_p.m_a, -1);
-            m_p.r_p_l = (uint)rpl;
 
             _nh.param<double>("bspline/default_knot_spacing", default_knot_spacing, -1.0);
             _nh.param<int>("bspline/degree", degree, -1);
@@ -296,19 +311,19 @@ class lro_rrt_ros_node
             current_point = start;
             // agent_step = max_velocity * 1/simulation_hz;
 
-            uint ray_per_layer = m_p.r_p_l;
-            m_p.z_s = m_p.m_r;
-            m_p.z_h = rrt_param.s_r * tan(m_p.vfov);
-            m_p.z_i = (int)floor((m_p.z_h * 2.0) / m_p.z_s);
-            m_p.r_s = 2 * M_PI / (double)ray_per_layer; 
+            m_p.v_d = 2.0 * rrt_param.s_r * tan(m_p.vfov/2.0);
+            m_p.h_d = 2.0 * rrt_param.s_r * sin(m_p.hfov/2.0);
 
-            for (int i = 0; i < m_p.z_i; i++)
-                for (uint j = 0; j < ray_per_layer; j++)
+            m_p.v_s = m_p.vfov / (double)m_p.v_p;
+            m_p.h_s = m_p.hfov / (double)m_p.h_p;
+
+            for (int i = 0; i < m_p.v_p; i++)
+                for (int j = 0; j < m_p.h_p; j++)
                 {
                     Eigen::Vector3d q = Eigen::Vector3d(
-                        rrt_param.s_r * cos(j*m_p.r_s - M_PI),
-                        rrt_param.s_r * sin(j*m_p.r_s - M_PI),
-                        i*m_p.z_s - m_p.z_h
+                        rrt_param.s_r * cos(j*m_p.h_s - m_p.hfov/2.0),
+                        rrt_param.s_r * sin(j*m_p.h_s - m_p.hfov/2.0),
+                        rrt_param.s_r * tan(i*m_p.v_s - m_p.vfov/2.0)
                     );
                     sensing_offset.push_back(q);
                 }
@@ -362,8 +377,14 @@ class lro_rrt_ros_node
 
             for (int i = 0; i < (int)sensing_offset.size(); i++)
             {
+                Eigen::Quaterniond point;
+                point.w() = 0;
+                point.vec() = sensing_offset[i];
+                Eigen::Quaterniond rotatedP = orientation.q * point * orientation.q.inverse(); 
+                Eigen::Vector3d q = p + rotatedP.vec();
+
                 Eigen::Vector3d intersect;
-                Eigen::Vector3d q = p + sensing_offset[i];
+                // Eigen::Vector3d q = p + sensing_offset[i];
                 if (!map.check_approx_intersection_by_segment(
                     p, q, (float)(m_p.m_r), intersect, "fast"))
                 {

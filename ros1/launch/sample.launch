@@ -1,39 +1,43 @@
 <launch>
 
-<arg name="map_size" value="30" />
+<arg name="map_size" value="50" />
 <arg name="height_size" value="7" />
 <arg name="protected_zone" value="0.50"/>
+<arg name="global_resolution" value="0.25"/>
 
 <include file="$(find lro_rrt_ros)/launch/gen_mockamap.launch">
     <arg name="size" value="$(arg map_size)" />
     <arg name="height" value="$(arg height_size)" />
+    <arg name="resolution" value="$(arg global_resolution)" />
 </include>
 
 <node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
     <param name="ros/threads" value="2"/>
-    <param name="ros/simulation_step" value="50"/>
+    <param name="ros/simulation_step" value="25"/>
     <param name="ros/map_hz" value="10"/>
 
     <param name="planning/sub_runtime_error" value="0.03"/>
     <param name="planning/runtime_error" value="0.1"/>
     <param name="planning/sensor_range" value="5.0"/>
-    <param name="planning/sensor_buffer_multiplier" value="1.0"/>
+    <param name="planning/sensor_buffer_multiplier" value="1.2"/>
     <param name="planning/interval" value="0.3"/>
     <param name="planning/resolution" value="$(arg protected_zone)"/>
-    <rosparam param="planning/search_limit_hfov"> [0.25, 0.75] </rosparam>
-    <rosparam param="planning/search_limit_vfov"> [0.28, 0.72] </rosparam>
-    <param name="planning/scaled_min_dist_from_node" value="0.3"/>
+    <rosparam param="planning/search_limit_hfov"> [0.275, 0.725] </rosparam>
+    <rosparam param="planning/search_limit_vfov"> [0.20, 0.80] </rosparam>
+    <param name="planning/scaled_min_dist_from_node" value="0.4"/>
     <rosparam param="planning/height"> [1.0, 2.5] </rosparam>
     <rosparam param="planning/no_fly_zone"> [] </rosparam>
 
-    <param name="map/resolution" value="0.3"/>
-    <param name="map/ray_per_layer" value="240"/>
+    <param name="map/resolution" value="$(eval 2. * arg('global_resolution'))"/>
+    <param name="map/hpixel" value="120"/>
+    <param name="map/vpixel" value="15"/>
     <param name="map/size" value="$(arg map_size)"/>
-    <param name="map/max_velocity" value="2"/>
-    <param name="map/vfov" value="0.8"/>
-    <param name="map/pcl_accumulation" value="5"/>
+    <param name="map/max_velocity" value="3"/>
+    <param name="map/vfov" value="1.40"/>
+    <param name="map/hfov" value="1.90"/>
+    <param name="map/pcl_accumulation" value="20"/>
 
-    <param name="bspline/default_knot_spacing" value="0.75"/>
+    <param name="bspline/default_knot_spacing" value="0.5"/>
     <param name="bspline/degree" value="3"/>
     <param name="bspline/duration_committed" value="1.0"/>
 

@@ -98,8 +98,7 @@ void lro_rrt_ros_node::generate_search_path()
 /** @brief Use this function wisely, since check and update may cause an infinite loop
  * If a bad data is given to the rrt node and it cannot complete the validity check
 */
-bool lro_rrt_ros_node::check_and_update_search(
-    Eigen::Vector3d current)
+bool lro_rrt_ros_node::check_and_update_search()
 {
     // std::cout << "Conducting check_and_update_search" << std::endl;
     // If it contains just 1 node which is its current point
@@ -182,7 +181,8 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    if (received_command && (int)(global_search_path.size()) != 0 && valid)
+    bspline_trajectory::nbs_pva_state_3d state_3d;
+    if (received_command && valid && !global_search_path.empty())
     {
         // Always use the point after the start point in global search path
         // Eigen::Vector3d displacement = global_search_path[1] - current_point;
@@ -196,23 +196,28 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
 
         // current_point += direction_vector * agent_step;
 
-        bspline_trajectory::nbs_pva_state_3d state_3d;
-        state_3d = b_t.get_nbspline_3d(
-            degree, b_p.t_p_v, b_p.c_p_v, system_clock::now(), traj_start_time);
-        current_point = state_3d.pos;
-
-        // std::cout << duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() << "s" << std::endl;
-
-        if (global_search_path.size() > 2 && 
-            (global_search_path[1] - current_point).norm() < 1.0)
-            global_search_path.erase(global_search_path.begin()+1);
-
-        // if ((int)(global_search_path.size()) == 1)
-        if (duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() < 0.10)
+        if (!b_p.c_p_v.empty() && !b_p.t_p_v.empty())
         {
-            global_search_path.clear();
-            received_command = false;
-            b_p = {};
+            state_3d = b_t.get_nbspline_3d(
+                degree, b_p.t_p_v, b_p.c_p_v, system_clock::now(), traj_start_time);
+            current_point = state_3d.pos;
+
+            // std::cout << duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() << "s" << std::endl;
+
+            if (global_search_path.size() > 2 && 
+                (global_search_path[1] - current_point).norm() < 1.0)
+                global_search_path.erase(global_search_path.begin()+1);
+
+            // if ((int)(global_search_path.size()) == 1)
+            if (duration<double>(b_p.t_p_v[b_p.t_p_v.size()-1] - system_clock::now()).count() < 0.10)
+            {
+                global_search_path.clear();
+                received_command = false;
+                b_p = {};
+            }
+
+            if (state_3d.vel.norm() > 0.10)
+                orientation.e.z() = atan2(state_3d.vel.y(), state_3d.vel.x());
         }
     }
     
@@ -221,6 +226,15 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
     pose.pose.position.x = current_point.x();
     pose.pose.position.y = current_point.y();
     pose.pose.position.z = current_point.z();
+
+    calc_uav_orientation(
+        state_3d.acc, orientation.e.z(), orientation.q, orientation.r);
+
+    pose.pose.orientation.w = orientation.q.w();
+	pose.pose.orientation.x = orientation.q.x();
+	pose.pose.orientation.y = orientation.q.y();
+	pose.pose.orientation.z = orientation.q.z();
+
     pose_pub.publish(pose);
 
     visualize_points(0.5, rrt_param.s_r*2);
@@ -236,24 +250,54 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     time_point<std::chrono::system_clock> timer = system_clock::now();
 
     bool bypass = false;
+    int index;
+    t_p_sc found;
+    int offset = 0;
+    int current_cp_index, current_knot_index;
 
-    // RRT Search Module
+    /**  
+     * @brief Start of RRT Search Module 
+    **/
 
-    rrt.update_pose_and_octree(local_cloud, current_point, goal);
+    // Update global path with current point
+    // knot span i-2 i-1 i i+1 i+2 i+3
+    if (!global_search_path.empty())
+    {
+        Eigen::Vector3d point;
+        // Do not update if no nearest knot from the previous vector
+        if (!b_t.find_nearest_knot(system_clock::now(), b_p.t_p_v, found, index))
+        {
+            valid = false;
+            return;
+        }
+        // Do not update if there are not enough points before
+        else if (index - (degree-1) < 0 || index + degree > (b_p.t_p_v.size()-1))
+            return;
+        else
+        {
+            current_knot_index = index + (1 + offset) + (degree - 1);
+            current_cp_index = index + (1 + offset);
+            point = b_p.c_p_v[current_cp_index];
+        }
+        // Update the octree with the local cloud
+        rrt.update_pose_and_octree(local_cloud, point, goal);
+        global_search_path.erase(global_search_path.begin());
+        global_search_path.insert(global_search_path.begin(), point);
+    }
+    else
+    {
+        // Update the octree with the local cloud
+        rrt.update_pose_and_octree(local_cloud, current_point, goal);
+        global_search_path.insert(global_search_path.begin(), current_point);
+    }
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
 
-    // Update global path with current point
-    if (!global_search_path.empty())
-        global_search_path.erase(global_search_path.begin());
-    
-    global_search_path.insert(global_search_path.begin(), current_point);
-
     double update_check_time;
     // Check to see whether the previous data extents to the end
     // if previous point last point connects to end point, do bypass    
-    if (check_and_update_search(current_point))
+    if (check_and_update_search())
     {
         // std::cout << KCYN << "Conducting bypass" << KNRM << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
@@ -285,10 +329,15 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     {
         std::cout << KRED << "no global path found!" << KNRM << std::endl;
         valid = false;
+        b_p.t_p_v.clear();
+        b_p.c_p_v.clear();
         return;
     }
 
-    // Non-Uniform Bspline
+    /**  
+     * @brief Start of Non-Uniform Bspline
+    **/
+
     // Only update if we have done a new RRT search
     if (!bypass)
     {
@@ -340,23 +389,9 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
         // Else there are previous knots and control points present
         else
         {
-            t_p_sc found;
-            int index;
-            // Do not update if no nearest knot from the previous vector
-            if (!b_t.find_nearest_knot(
-                system_clock::now(), b_p.t_p_v, found, index))
-            {
-                valid = false;
-                return;
-            }
-
-            // Do not update if there are not enough points before
-            if (index - (degree-1) < 0 || index + degree > (b_p.t_p_v.size()-1))
-                return;
-
             // Add previous c_p to beginning of the vector
             // for 3th degree i-2 i-1 i i+1
-            for (int i = index - 1; i >= index - (degree-1); i--)
+            for (int i = current_cp_index; i >= index - (degree-1); i--)
             {
                 tmp_control_points.insert(
                     tmp_control_points.begin(), b_p.c_p_v[i]);
@@ -364,13 +399,13 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
             // Add previous t_p to beginning of the vector
             // for 3th degree i-2 i-1 i i+1 i+2 i+3
-            for (int i = index + degree - 2; i >= index - (degree-1); i--)
+            for (int i = current_knot_index; i >= index - (degree-1); i--)
             {
                 tmp_time.insert(
                     tmp_time.begin(), b_p.t_p_v[i]);
             } 
 
-            t_p_sc base = b_p.t_p_v[index + degree - 2];
+            t_p_sc base = b_p.t_p_v[current_knot_index + 1];
 
             for (int i = 0; i < (int)tmp_time_waypoint.size(); i++)
             {
@@ -395,4 +430,27 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     }
 
     valid = true;
+}
+
+void lro_rrt_ros_node::calc_uav_orientation(
+	Eigen::Vector3d acc, double yaw_rad, Eigen::Quaterniond &q, Eigen::Matrix3d &r)
+{
+	Eigen::Vector3d alpha = acc + Eigen::Vector3d(0,0,9.81);
+	Eigen::Vector3d xC(cos(yaw_rad), sin(yaw_rad), 0);
+	Eigen::Vector3d yC(-sin(yaw_rad), cos(yaw_rad), 0);
+	Eigen::Vector3d xB = (yC.cross(alpha)).normalized();
+	Eigen::Vector3d yB = (alpha.cross(xB)).normalized();
+	Eigen::Vector3d zB = xB.cross(yB);
+
+	Eigen::Matrix3d R;
+	R.col(0) = xB;
+	R.col(1) = yB;
+	R.col(2) = zB;
+
+    r = R;
+
+	Eigen::Quaterniond q_tmp(R);
+    q = q_tmp;
+
+	return;
 }
