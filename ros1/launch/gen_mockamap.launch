@@ -3,6 +3,7 @@
 <arg name="size" default="" />
 <arg name="height" default="" />
 <arg name="resolution" default="" />
+<arg name="type" default="" />
 
 <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
   <param name="seed" type="int" value="511"/>
@@ -18,7 +19,7 @@
   <param name="y_length" type="int" value="$(arg size)"/>
   <param name="z_length" type="int" value="$(arg height)"/>
 
-  <param name="type" type="int" value="1"/>
+  <param name="type" type="int" value="$(arg type)"/>
     <!-- 1 perlin noise parameters -->
     <!-- complexity:    base noise frequency,
                         large value will be complex
@@ -33,6 +34,10 @@
     <param name="fill"          type="double" value="0.3"/>
     <param name="fractal"       type="int"    value="1"/>
     <param name="attenuation"   type="double" value="0.2"/>
+
+    <param name="width_min"         type="double" value="1.50"/>
+    <param name="width_max"         type="double" value="2.5"/>
+    <param name="obstacle_number"   type="int"    value="60"/>
 </node>
 
 </launch>

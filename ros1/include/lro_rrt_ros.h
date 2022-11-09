@@ -78,7 +78,7 @@ class lro_rrt_ros_node
             uint r_p_l; // ray per layer
             double vfov;
             double hfov;
-            int m_a; // map accumulation
+            double s_m_s; // sliding map size
         };
 
         struct bspline_parameters
@@ -94,7 +94,7 @@ class lro_rrt_ros_node
             Eigen::Matrix3d r; // rotation matrix
         };
 
-        lro_rrt_server::lro_rrt_server_node rrt, map;
+        lro_rrt_server::lro_rrt_server_node rrt, map, sliding_map;
         lro_rrt_server::lro_rrt_server_node::parameters rrt_param;
         map_parameters m_p;
         vector<Eigen::Vector3d> sensing_offset;
@@ -110,8 +110,8 @@ class lro_rrt_ros_node
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
         ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
         
-        pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud;
-        vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> local_cloud_accumulated;
+        pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr sliding_cloud;
 
         Eigen::Vector3d current_point, goal;
 
@@ -140,7 +140,7 @@ class lro_rrt_ros_node
     
         /** @brief Functions used in lro_rrt **/
         bool check_and_update_search();
-        void generate_search_path();
+        bool generate_search_path();
 
         /** @brief Timers for searching and agent movement **/
         ros::Timer search_timer, agent_timer, map_timer;
@@ -252,7 +252,7 @@ class lro_rrt_ros_node
             _nh.param<double>("map/max_velocity", max_velocity, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
             _nh.param<double>("map/hfov", m_p.hfov, -1.0);
-            _nh.param<int>("map/pcl_accumulation", m_p.m_a, -1);
+            _nh.param<double>("map/sliding_map_size", m_p.s_m_s, -1.0);
 
             _nh.param<double>("bspline/default_knot_spacing", default_knot_spacing, -1.0);
             _nh.param<int>("bspline/degree", degree, -1);
@@ -329,7 +329,9 @@ class lro_rrt_ros_node
                 }
             
             local_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
-                    new pcl::PointCloud<pcl::PointXYZ>());
+                new pcl::PointCloud<pcl::PointXYZ>());
+            // sliding_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
+            //     new pcl::PointCloud<pcl::PointXYZ>());
 
             agent_timer.start();
             search_timer.start();
@@ -386,8 +388,10 @@ class lro_rrt_ros_node
                 Eigen::Vector3d intersect;
                 // Eigen::Vector3d q = p + sensing_offset[i];
                 if (!map.check_approx_intersection_by_segment(
-                    p, q, (float)(m_p.m_r), intersect, "fast"))
+                    p, q, (float)(m_p.m_r), intersect))
                 {
+                    Eigen::Vector3d direction = (q - p).normalized(); 
+                    intersect -= rrt_param.r/2 * direction;
                     pcl::PointXYZ add;
                     add.x = intersect.x();
                     add.y = intersect.y();

@@ -46,6 +46,9 @@ void lro_rrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
         map_param.r = m_p.m_r;
         map.set_parameters(map_param);
         map.update_pose_and_octree(full_cloud, current_point, goal);
+
+        map_param.r = m_p.m_r/2.0;
+        sliding_map.set_parameters(map_param);
     }
 
     return;
@@ -69,7 +72,7 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 }
 
 /** @brief Construct the search path from RRT search and from its shortened path */
-void lro_rrt_ros_node::generate_search_path()
+bool lro_rrt_ros_node::generate_search_path()
 {
     std::cout << "current (" << KBLU << 
         current_point.transpose() << KNRM << ") " << 
@@ -77,21 +80,24 @@ void lro_rrt_ros_node::generate_search_path()
         goal.transpose() << ") " << KNRM << 
         std::endl;
     // Find a RRT path that is quick and stretches to the end point
-    vector<Eigen::Vector3d> path = rrt.find_path(global_search_path);
-    
-    // Clear global_serach_path
-    global_search_path.clear();
-    // If path gives an invalid value, execute some form of emergency
-    if (path.empty())
+    vector<Eigen::Vector3d> path;
+    if (!rrt.get_path(global_search_path, path))
     {
         error_counter++;
-        std::cout << KBLU << "Error in finding path!" << KNRM << std::endl;
-        return;
+        // Clear global_search_path
+        global_search_path.clear();
+        std::cout << KRED << "error in finding path!" << KNRM << std::endl;
+        return false;
     }
-
-    // Save global_path
-    // Note that global search path includes the current location the agent is at
-    global_search_path = path;
+    else
+    {
+        // Clear global_search_path
+        global_search_path.clear();
+        // Save global_path
+        // Note that global search path includes the current location the agent is at
+        global_search_path = path;
+        return true;
+    }
 
 }
 
@@ -154,15 +160,22 @@ void lro_rrt_ros_node::local_map_timer(const ros::TimerEvent &)
     double ray_time = duration<double>(system_clock::now() - ray_timer).count();
     // std::cout << "raycast time (" << KBLU << ray_time * 1000 << KNRM << "ms)" << std::endl;
 
-    if (local_cloud_accumulated.size() > m_p.m_a)
-        local_cloud_accumulated.erase(local_cloud_accumulated.begin());
+    // if (sliding_map.size() > m_p.m_a)
+    //     sliding_map.erase(sliding_map.begin());
     
-    local_cloud_accumulated.push_back(local_cloud_current);
+    *local_cloud_current += *local_cloud;
+    sliding_map.update_pose_and_octree(
+        local_cloud_current, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    
+    Eigen::Vector3d min = 
+        current_point - Eigen::Vector3d(
+        m_p.s_m_s/2, m_p.s_m_s/2, m_p.s_m_s/2);
+    Eigen::Vector3d max = 
+        current_point + Eigen::Vector3d(
+        m_p.s_m_s/2, m_p.s_m_s/2, m_p.s_m_s/2);
 
-    local_cloud->points.clear();
-
-    for (int i = 0; i < (int)local_cloud_accumulated.size(); i++)
-        *local_cloud += *(local_cloud_accumulated[i]);
+    sliding_map.extract_point_cloud_within_boundary(
+        min, max, local_cloud);
     
     double ray_n_acc_time = duration<double>(system_clock::now() - ray_timer).count();
     // std::cout << "raycast and accumulation time (" << KBLU << ray_n_acc_time * 1000 << KNRM << "ms)" << std::endl;
@@ -309,30 +322,28 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
         // std::cout << "Conducting search" << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
             timer).count()*1000 - update_octree_time;
-        generate_search_path();
+        if (!generate_search_path())
+        {
+            std::cout << KRED << "no global path found!" << KNRM << std::endl;
+            valid = false;
+            b_p.t_p_v.clear();
+            b_p.c_p_v.clear();
+            return;
+        }
+        else
+        {
+            nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
+            g_rrt_points_pub.publish(global_path);
+        } 
     }
     
     std::cout << "full search time taken = " << KGRN <<
         duration<double>(system_clock::now() - 
         timer).count()*1000 << "ms" << KNRM << 
-        " update_octree time taken = " << KGRN <<
+        " update_octree time taken (" << local_cloud->points.size() << ") = " << KGRN <<
         update_octree_time << "ms" << KNRM << 
         " update_check time taken = " << KGRN <<
         update_check_time << "ms" << KNRM << std::endl;
-
-    if (!global_search_path.empty())
-    {
-        nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
-        g_rrt_points_pub.publish(global_path);
-    }
-    else
-    {
-        std::cout << KRED << "no global path found!" << KNRM << std::endl;
-        valid = false;
-        b_p.t_p_v.clear();
-        b_p.c_p_v.clear();
-        return;
-    }
 
     /**  
      * @brief Start of Non-Uniform Bspline
