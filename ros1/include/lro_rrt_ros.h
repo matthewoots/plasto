@@ -19,7 +19,7 @@
 #define LRO_RRT_ROS_H
 
 #include "lro_rrt_server.h"
-#include "nbspline.h"
+#include "am_traj.hpp"
 
 #include <string>
 #include <thread>   
@@ -58,7 +58,6 @@ using namespace Eigen;
 using namespace std;
 using namespace std::chrono; // nanoseconds, system_clock, seconds
 using namespace lro_rrt_server;
-using namespace nbspline;
 
 typedef time_point<std::chrono::system_clock> t_p_sc; // giving a typename
 
@@ -79,12 +78,25 @@ class lro_rrt_ros_node
             double vfov;
             double hfov;
             double s_m_s; // sliding map size
+            double s_m_r; // sliding map resolution
         };
 
-        struct bspline_parameters
+        struct am_trajectory_parameters
         {
-            vector<Eigen::Vector3d> c_p_v; // control point vector
-            vector<t_p_sc> t_p_v; // time point vector
+            double w_t; // weight for the time regularization
+            double w_a; // weight for the integrated squared norm of acceleration
+            double w_j; // weight for the integrated squared norm of jerk
+            double m_v; // maximum velocity rate
+            double m_a; // maximum acceleration rate
+            int m_i; // maximum number of iterations in optimization
+            double e; // relative tolerance
+           
+        };
+
+        struct am_trajectory
+        {
+            std::pair<t_p_sc, t_p_sc> s_e_t; // start and end time of the trajectory
+            Trajectory traj;
         };
 
         struct orientation
@@ -94,13 +106,20 @@ class lro_rrt_ros_node
             Eigen::Matrix3d r; // rotation matrix
         };
 
+        enum agent_state
+        {
+            IDLE,
+            PROCESS_MISSION,
+            EXEC_MISSION
+        };
+
         lro_rrt_server::lro_rrt_server_node rrt, map, sliding_map;
-        lro_rrt_server::lro_rrt_server_node::parameters rrt_param;
+        lro_rrt_server::parameters rrt_param;
         map_parameters m_p;
         vector<Eigen::Vector3d> sensing_offset;
 
-        bspline_parameters b_p; // current bspline parameters
-        nbspline::bspline_trajectory b_t;
+        am_trajectory_parameters a_m_p; // am trajectory parameters
+        std::vector<am_trajectory> am;
 
         std::mutex pose_update_mutex;
 
@@ -111,36 +130,27 @@ class lro_rrt_ros_node
         ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr sliding_cloud;
 
         Eigen::Vector3d current_point, goal;
 
-        vector<Eigen::Vector3d> global_search_path;
         vector<Eigen::Vector4d> no_fly_zone;
 
         Eigen::Vector4d color;
 
-        double simulation_hz, map_hz;
-        // double agent_step;
-        double max_velocity;
-        double default_knot_spacing;
-        int degree;
-        double duration_committed;
-        bool valid;
+        double simulation_hz, map_hz, duration_committed, default_knot_spacing;
+        int degree, state;
+        bool is_safe;
         orientation orientation;
 
-        t_p_sc traj_start_time;
+        double safety_horizon, reserve_time, reached_threshold;
 
-        bool received_command = false;
-        bool init_cloud = false;
+        bool init_cloud = false, emergency_stop = false;
+
+        t_p_sc emergency_stop_time;
 
         /** @brief Callbacks, mainly for loading pcl and commands **/
         void command_callback(const geometry_msgs::PointConstPtr& msg);
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
-    
-        /** @brief Functions used in lro_rrt **/
-        bool check_and_update_search();
-        bool generate_search_path();
 
         /** @brief Timers for searching and agent movement **/
         ros::Timer search_timer, agent_timer, map_timer;
@@ -203,6 +213,7 @@ class lro_rrt_ros_node
     public:
 
         int threads;
+        Eigen::Vector3d previous_point;
 
         lro_rrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
@@ -218,6 +229,7 @@ class lro_rrt_ros_node
 
             _nh.param<double>("planning/sub_runtime_error", rrt_param.r_e.first, -1.0);
             _nh.param<double>("planning/runtime_error", rrt_param.r_e.second, -1.0);
+            _nh.param<double>("planning/refinement_time", rrt_param.r_t, -1.0);
             _nh.param<double>("planning/sensor_range", rrt_param.s_r, -1.0);
             _nh.param<double>("planning/sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
             _nh.param<double>("planning/interval", rrt_param.s_i, -1.0);  
@@ -246,17 +258,30 @@ class lro_rrt_ros_node
             }
 
             _nh.param<double>("map/resolution", m_p.m_r, -1.0);
-            _nh.param<int>("map/hpixel", m_p.h_p, -1);
-            _nh.param<int>("map/vpixel", m_p.v_p, -1);
             _nh.param<double>("map/size", rrt_param.m_s, -1.0);
-            _nh.param<double>("map/max_velocity", max_velocity, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
             _nh.param<double>("map/hfov", m_p.hfov, -1.0);
-            _nh.param<double>("map/sliding_map_size", m_p.s_m_s, -1.0);
 
-            _nh.param<double>("bspline/default_knot_spacing", default_knot_spacing, -1.0);
-            _nh.param<int>("bspline/degree", degree, -1);
-            _nh.param<double>("bspline/duration_committed", duration_committed, -1.0);
+            // _nh.param<int>("map/hpixel", m_p.h_p, -1);
+            // _nh.param<int>("map/vpixel", m_p.v_p, -1);
+
+            m_p.h_p = 1.5 * (int)ceil((rrt_param.s_r * tan(m_p.hfov/2)) / m_p.m_r);
+            m_p.v_p = 1.5 * (int)ceil((rrt_param.s_r * tan(m_p.vfov/2)) / m_p.m_r);
+
+            _nh.param<double>("sliding_map/size", m_p.s_m_s, -1.0);
+            _nh.param<double>("sliding_map/resolution", m_p.s_m_r, -1.0);
+
+            _nh.param<double>("amtraj/weight/time_regularization", a_m_p.w_t, -1.0);
+            _nh.param<double>("amtraj/weight/acceleration", a_m_p.w_a, -1.0);
+            _nh.param<double>("amtraj/weight/jerk", a_m_p.w_j, -1.0);
+            _nh.param<double>("amtraj/limits/max_vel", a_m_p.m_v, -1.0);
+            _nh.param<double>("amtraj/limits/max_acc", a_m_p.m_a, -1.0);
+            _nh.param<int>("amtraj/limits/iterations", a_m_p.m_i, -1);
+            _nh.param<double>("amtraj/limits/epsilon", a_m_p.e, -1.0);
+
+            _nh.param<double>("safety/total_safety_horizon", safety_horizon, -1.0);
+            _nh.param<double>("safety/reserve_time", reserve_time, -1.0);
+            _nh.param<double>("safety/reached_threshold", reached_threshold, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
                 "/mock_map", 1,  boost::bind(&lro_rrt_ros_node::pcl2_callback, this, _1));
@@ -292,7 +317,7 @@ class lro_rrt_ros_node
             std::uniform_real_distribution<double> dis_angle(-M_PI, M_PI);
             std::uniform_real_distribution<double> dis_height(height_list[0], height_list[1]);
             double rand_angle = dis_angle(generator);
-            double opp_rand_angle = constrain_to_pi(rand_angle - M_PI);
+            double opp_rand_angle = constrain_between_180(rand_angle - M_PI);
 
             std::cout << "rand_angle = " << KBLU << rand_angle << KNRM << " " <<
                     "opp_rand_angle = " << KBLU << opp_rand_angle << KNRM << std::endl;
@@ -300,16 +325,9 @@ class lro_rrt_ros_node
             double h = rrt_param.m_s / 2.0 * 1.5; // multiply with an expansion
             Eigen::Vector3d start = Eigen::Vector3d(h * cos(rand_angle), 
                 h * sin(rand_angle), dis_height(generator));
-            // Eigen::Vector3d end = Eigen::Vector3d(h * cos(opp_rand_angle), 
-            //     h * sin(opp_rand_angle), dis_height(generator));
-
-            // std::cout << "start_position = " << KBLU << start.transpose() << KNRM << " " <<
-            //         "end_position = " << KBLU << end.transpose() << KNRM << " " <<
-            //         "distance = " << KBLU << (start-end).norm() << KNRM << std::endl;
 
             // Let us start at the random start point
             current_point = start;
-            // agent_step = max_velocity * 1/simulation_hz;
 
             m_p.v_d = 2.0 * rrt_param.s_r * tan(m_p.vfov/2.0);
             m_p.h_d = 2.0 * rrt_param.s_r * sin(m_p.hfov/2.0);
@@ -330,21 +348,13 @@ class lro_rrt_ros_node
             
             local_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
                 new pcl::PointCloud<pcl::PointXYZ>());
-            // sliding_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
-            //     new pcl::PointCloud<pcl::PointXYZ>());
+
+            state = agent_state::IDLE;
 
             agent_timer.start();
             search_timer.start();
             map_timer.start();
         }
-
-        double constrain_to_pi(double x){
-            x = fmod(x + M_PI, 2 * M_PI);
-            if (x < 0)
-                x += 2 * M_PI;
-            return x - M_PI;
-        }
-
 
         ~lro_rrt_ros_node()
         {
@@ -373,7 +383,8 @@ class lro_rrt_ros_node
         }
         
          
-        pcl::PointCloud<pcl::PointXYZ>::Ptr raycast_pcl_w_fov(Eigen::Vector3d p)
+        pcl::PointCloud<pcl::PointXYZ>::Ptr 
+            raycast_pcl_w_fov(Eigen::Vector3d p)
         {
             pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
 
@@ -388,21 +399,39 @@ class lro_rrt_ros_node
                 Eigen::Vector3d intersect;
                 // Eigen::Vector3d q = p + sensing_offset[i];
                 if (!map.check_approx_intersection_by_segment(
-                    p, q, (float)(m_p.m_r), intersect))
+                    p, q, intersect))
                 {
                     Eigen::Vector3d direction = (q - p).normalized(); 
-                    intersect -= rrt_param.r/2 * direction;
+                    // intersect += m_p.s_m_r/2 * direction;
                     pcl::PointXYZ add;
                     add.x = intersect.x();
                     add.y = intersect.y();
                     add.z = intersect.z();
                     tmp->points.push_back(add);
                 }
+
             }
 
             return tmp;
 
         }
+
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr update_occupancy_buffer(
+        //     Eigen::Vector3d c_p, Eigen::Vector3d p_p, 
+        //     pcl::PointCloud<pcl::PointXYZ>::Ptr obs)
+        // {
+        //     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
+
+        //     Eigen::Vector3d d = c_p - p_p;
+        //     // Add unknown surrounding
+        //     // Add in unknown points inside box 2, but not inside box 1
+        //     int v_x = (int)round(d.x() / m_p.m_r);
+        //     int v_y = (int)round(d.y() / m_p.m_r);
+        //     int v_z = (int)round(d.z() / m_p.m_r);
+
+        //     return tmp;
+
+        // }
 };
 
 #endif

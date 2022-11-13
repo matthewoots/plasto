@@ -16,11 +16,11 @@ Some benefits in this module
 
 - **[Local Sliding Map]** Using the sensor data concatenated with the original local cloud, we pass it into the octree, to reduce the pcl size further, whilst limiting to the AABB set around the agent
 
-- **[Trajectory]** Using `libnbspline` which provides a smooth trajectory (Will have a branch that changes it to the `am-traj` by ZJU, https://github.com/ZJU-FAST-Lab/am_traj)
+- **[Trajectory]** Using `am-traj` which provides a smooth time-optimal trajectory by ZJU, https://github.com/ZJU-FAST-Lab/am_traj
 
 | preview | random_fov |
 | :--: | :--: |
-| [<img src="lro_rrt.gif" width="500"/>](lro_rrt.gif) | [<img src="lro_rrt_range.jpg" width="450"/>](lro_rrt_range.jpg) |
+| [<img src="lro_rrt_am.gif" width="500"/>](lro_rrt_am.gif) | [<img src="lro_rrt_range.jpg" width="450"/>](lro_rrt_range.jpg) |
 
 ## Setup
 ```bash
