@@ -19,6 +19,7 @@
 #define LRO_RRT_ROS_H
 
 #include "lro_rrt_server.h"
+#include "mapper.h"
 #include "am_traj.hpp"
 
 #include <string>
@@ -58,6 +59,7 @@ using namespace Eigen;
 using namespace std;
 using namespace std::chrono; // nanoseconds, system_clock, seconds
 using namespace lro_rrt_server;
+using namespace octree_map;
 
 typedef time_point<std::chrono::system_clock> t_p_sc; // giving a typename
 
@@ -67,18 +69,11 @@ class lro_rrt_ros_node
 
         struct map_parameters
         {
-            double h_d; // horizontal fov length
-            double v_d; // vertical fov length
-            int h_p; // horizontal pixel
-            int v_p; // vertical pixel
-            double h_s; // angle step for horizontal
-            double v_s; // angle step for vertical
             double m_r; // map resolution
-            uint r_p_l; // ray per layer
+            double s_r;
             double vfov;
             double hfov;
             double s_m_s; // sliding map size
-            double s_m_r; // sliding map resolution
         };
 
         struct am_trajectory_parameters
@@ -106,6 +101,12 @@ class lro_rrt_ros_node
             Eigen::Matrix3d r; // rotation matrix
         };
 
+        struct pose
+        {
+            Eigen::Vector3d pos;
+            orientation rot;
+        };
+
         enum agent_state
         {
             IDLE,
@@ -113,10 +114,13 @@ class lro_rrt_ros_node
             EXEC_MISSION
         };
 
-        lro_rrt_server::lro_rrt_server_node rrt, map, sliding_map;
+        lro_rrt_server::lro_rrt_server_node rrt;
         lro_rrt_server::parameters rrt_param;
         map_parameters m_p;
-        vector<Eigen::Vector3d> sensing_offset;
+
+        octree_map::sliding_map sm;
+
+        double map_size;
 
         am_trajectory_parameters a_m_p; // am trajectory parameters
         std::vector<am_trajectory> am;
@@ -127,22 +131,26 @@ class lro_rrt_ros_node
 
         ros::Subscriber pcl2_msg_sub, command_sub;
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
-        ros::Publisher pose_pub, debug_pcl_pub, debug_position_pub;
+        ros::Publisher pose_pub, debug_pcl_pub, debug_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
 
-        Eigen::Vector3d current_point, goal;
+        Eigen::Vector3d goal;
+        pose current_pose;
 
         vector<Eigen::Vector4d> no_fly_zone;
 
-        Eigen::Vector4d color;
+        std::vector<Eigen::Vector4d> color_range;
 
         double simulation_hz, map_hz, duration_committed, default_knot_spacing;
         int degree, state;
-        bool is_safe;
+        bool is_safe = false, 
+            simulation = false, 
+            have_global_cloud = false,
+            sample_tree = false;
         orientation orientation;
 
-        double safety_horizon, reserve_time, reached_threshold;
+        double safety_horizon, reached_threshold;
 
         bool init_cloud = false, emergency_stop = false;
 
@@ -180,40 +188,84 @@ class lro_rrt_ros_node
             return path;
         }
 
-        void visualize_points(double scale_small, double scale_big)
+        visualization_msgs::Marker visualize_points(
+            vector<Eigen::Vector3d> points_vect, 
+            Eigen::Vector4d color, double scale, int index)
         {
-            visualization_msgs::Marker sphere_points, search;
-            sphere_points.header.frame_id = search.header.frame_id = "world";
-            sphere_points.header.stamp = search.header.stamp = ros::Time::now();
-            sphere_points.type = visualization_msgs::Marker::SPHERE;
-            search.type = visualization_msgs::Marker::SPHERE;
-            sphere_points.action = search.action = visualization_msgs::Marker::ADD;
+            visualization_msgs::Marker points;
+            points.header.frame_id = "world";
+            points.header.stamp = ros::Time::now();
+            points.type = visualization_msgs::Marker::POINTS;
+            points.action = visualization_msgs::Marker::ADD;
 
-            sphere_points.id = 0;
-            search.id = 1;
+            points.id = index;
 
-            sphere_points.pose.orientation.w = search.pose.orientation.w = 1.0;
-            sphere_points.color.r = search.color.g = color(0);
-            sphere_points.color.g = search.color.r = color(1);
-            sphere_points.color.b = search.color.b = color(2);
+            points.color.r = color(0);
+            points.color.g = color(1);
+            points.color.b = color(2);
 
-            sphere_points.color.a = color(3);
-            search.color.a = 0.1;
+            points.color.a = color(3);
 
-            sphere_points.scale.x = scale_small;
-            sphere_points.scale.y = scale_small;
-            sphere_points.scale.z = scale_small;
+            points.scale.x = scale;
+            points.scale.y = scale;
+            
+            // Create the vertices point
+            for (Eigen::Vector3d &vect : points_vect)
+            {
+                geometry_msgs::Point p1;
+                p1.x = vect.x();
+                p1.y = vect.y();
+                p1.z = vect.z();
 
-            search.scale.x = scale_big;
-            search.scale.y = scale_big;
-            search.scale.z = scale_big;
+                points.points.push_back(p1);
+            }
 
+            return points;
+        }
+
+        visualization_msgs::Marker visualize_line_list(
+            vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> vect_vert, 
+            Eigen::Vector4d color, double scale, int index, double transparency)
+        {
+            visualization_msgs::Marker lines;
+            lines.header.frame_id = "world";
+            lines.header.stamp = ros::Time::now();
+            lines.type = visualization_msgs::Marker::LINE_LIST;
+            lines.action = visualization_msgs::Marker::ADD;
+
+            lines.id = index;
+
+            lines.color.r = color(0);
+            lines.color.g = color(1);
+            lines.color.b = color(2);
+
+            lines.color.a = transparency;
+
+            lines.scale.x = scale;
+            
+            // Create the vertices line list
+            for (std::pair<Eigen::Vector3d, Eigen::Vector3d> &vert_pair : vect_vert)
+            {
+                geometry_msgs::Point p1, p2;
+                p1.x = vert_pair.first.x();
+                p2.x = vert_pair.second.x();
+
+                p1.y = vert_pair.first.y();
+                p2.y = vert_pair.second.y();
+
+                p1.z = vert_pair.first.z();
+                p2.z = vert_pair.second.z();
+
+                lines.points.push_back(p1);
+                lines.points.push_back(p2);
+            }
+
+            return lines;
         }
 
     public:
 
         int threads;
-        Eigen::Vector3d previous_point;
 
         lro_rrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
@@ -223,14 +275,16 @@ class lro_rrt_ros_node
             std::vector<double> search_limit_hfov_list, 
                 search_limit_vfov_list, height_list, no_fly_zone_list;
 
+            _nh.param<bool>("ros/simulation", simulation, true);
+            _nh.param<bool>("ros/have_global_cloud", have_global_cloud, true);
             _nh.param<int>("ros/threads", threads, -1);
             _nh.param<double>("ros/simulation_hz", simulation_hz, -1.0);
             _nh.param<double>("ros/map_hz", map_hz, -1.0);
 
-            _nh.param<double>("planning/sub_runtime_error", rrt_param.r_e.first, -1.0);
-            _nh.param<double>("planning/runtime_error", rrt_param.r_e.second, -1.0);
+            _nh.param<double>("planning/runtime_error", rrt_param.r_e, -1.0);
             _nh.param<double>("planning/refinement_time", rrt_param.r_t, -1.0);
             _nh.param<double>("planning/sensor_range", rrt_param.s_r, -1.0);
+            m_p.s_r = rrt_param.s_r;
             _nh.param<double>("planning/sensor_buffer_multiplier", rrt_param.s_bf, -1.0);
             _nh.param<double>("planning/interval", rrt_param.s_i, -1.0);  
             _nh.param<double>("planning/resolution", rrt_param.r, -1.0);
@@ -256,20 +310,14 @@ class lro_rrt_ros_node
                         no_fly_zone_list[3+i*4])
                     );
             }
+            _nh.param<bool>("planning/sample_tree", sample_tree, false);
 
             _nh.param<double>("map/resolution", m_p.m_r, -1.0);
-            _nh.param<double>("map/size", rrt_param.m_s, -1.0);
+            _nh.param<double>("map/size", map_size, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
             _nh.param<double>("map/hfov", m_p.hfov, -1.0);
 
-            // _nh.param<int>("map/hpixel", m_p.h_p, -1);
-            // _nh.param<int>("map/vpixel", m_p.v_p, -1);
-
-            m_p.h_p = 1.5 * (int)ceil((rrt_param.s_r * tan(m_p.hfov/2)) / m_p.m_r);
-            m_p.v_p = 1.5 * (int)ceil((rrt_param.s_r * tan(m_p.vfov/2)) / m_p.m_r);
-
             _nh.param<double>("sliding_map/size", m_p.s_m_s, -1.0);
-            _nh.param<double>("sliding_map/resolution", m_p.s_m_r, -1.0);
 
             _nh.param<double>("amtraj/weight/time_regularization", a_m_p.w_t, -1.0);
             _nh.param<double>("amtraj/weight/acceleration", a_m_p.w_a, -1.0);
@@ -280,7 +328,6 @@ class lro_rrt_ros_node
             _nh.param<double>("amtraj/limits/epsilon", a_m_p.e, -1.0);
 
             _nh.param<double>("safety/total_safety_horizon", safety_horizon, -1.0);
-            _nh.param<double>("safety/reserve_time", reserve_time, -1.0);
             _nh.param<double>("safety/reached_threshold", reached_threshold, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
@@ -293,7 +340,7 @@ class lro_rrt_ros_node
             pose_pub = _nh.advertise<geometry_msgs::PoseStamped>("/pose", 10);
             g_rrt_points_pub = _nh.advertise<nav_msgs::Path>("/rrt_points_global", 10);
             debug_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/debug_map", 10);
-            debug_position_pub = _nh.advertise
+            debug_pub = _nh.advertise
                 <visualization_msgs::Marker>("/debug_points", 10);
 
             /** @brief Timer for the rrt search and agent */
@@ -311,49 +358,45 @@ class lro_rrt_ros_node
             std::random_device dev;
             std:mt19937 generator(dev());
             std::uniform_real_distribution<double> dis(0.0, 1.0);
-            color = Eigen::Vector4d(dis(generator), dis(generator), dis(generator), 0.5);
+            int color_count = 5;
+            for (int i = 0; i < color_count; i++)
+                color_range.push_back(Eigen::Vector4d(dis(generator), dis(generator), dis(generator), 0.5));
 
-            /** @brief Generate a random point **/
-            std::uniform_real_distribution<double> dis_angle(-M_PI, M_PI);
-            std::uniform_real_distribution<double> dis_height(height_list[0], height_list[1]);
-            double rand_angle = dis_angle(generator);
-            double opp_rand_angle = constrain_between_180(rand_angle - M_PI);
+            if (simulation)
+            {
+                /** @brief Generate a random point **/
+                std::uniform_real_distribution<double> dis_angle(-M_PI, M_PI);
+                std::uniform_real_distribution<double> dis_height(height_list[0], height_list[1]);
+                double rand_angle = dis_angle(generator);
+                double opp_rand_angle = constrain_between_180(rand_angle - M_PI);
 
-            std::cout << "rand_angle = " << KBLU << rand_angle << KNRM << " " <<
-                    "opp_rand_angle = " << KBLU << opp_rand_angle << KNRM << std::endl;
+                std::cout << "rand_angle = " << KBLU << rand_angle << KNRM << " " <<
+                        "opp_rand_angle = " << KBLU << opp_rand_angle << KNRM << std::endl;
 
-            double h = rrt_param.m_s / 2.0 * 1.5; // multiply with an expansion
-            Eigen::Vector3d start = Eigen::Vector3d(h * cos(rand_angle), 
-                h * sin(rand_angle), dis_height(generator));
-
-            // Let us start at the random start point
-            current_point = start;
-
-            m_p.v_d = 2.0 * rrt_param.s_r * tan(m_p.vfov/2.0);
-            m_p.h_d = 2.0 * rrt_param.s_r * sin(m_p.hfov/2.0);
-
-            m_p.v_s = m_p.vfov / (double)m_p.v_p;
-            m_p.h_s = m_p.hfov / (double)m_p.h_p;
-
-            for (int i = 0; i < m_p.v_p; i++)
-                for (int j = 0; j < m_p.h_p; j++)
-                {
-                    Eigen::Vector3d q = Eigen::Vector3d(
-                        rrt_param.s_r * cos(j*m_p.h_s - m_p.hfov/2.0),
-                        rrt_param.s_r * sin(j*m_p.h_s - m_p.hfov/2.0),
-                        rrt_param.s_r * tan(i*m_p.v_s - m_p.vfov/2.0)
-                    );
-                    sensing_offset.push_back(q);
-                }
+                // Let us start at the random start point
+                double h = map_size / 2.0 * 1.5; // multiply with an expansion
+                current_pose.pos = Eigen::Vector3d(h * cos(rand_angle), 
+                    h * sin(rand_angle), dis_height(generator));
+            }
             
             local_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
                 new pcl::PointCloud<pcl::PointXYZ>());
+            
+            if (!have_global_cloud)
+                sm.set_parameters(
+                    m_p.hfov, m_p.vfov, m_p.m_r, 
+                    m_p.s_r, m_p.s_m_s,
+                    full_cloud, true);
 
             state = agent_state::IDLE;
 
-            agent_timer.start();
+            if (simulation)
+            {
+                agent_timer.start();
+                map_timer.start();
+            }
+            
             search_timer.start();
-            map_timer.start();
         }
 
         ~lro_rrt_ros_node()
@@ -381,57 +424,7 @@ class lro_rrt_ros_node
             
             return tmp_cloud;
         }
-        
-         
-        pcl::PointCloud<pcl::PointXYZ>::Ptr 
-            raycast_pcl_w_fov(Eigen::Vector3d p)
-        {
-            pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
 
-            for (int i = 0; i < (int)sensing_offset.size(); i++)
-            {
-                Eigen::Quaterniond point;
-                point.w() = 0;
-                point.vec() = sensing_offset[i];
-                Eigen::Quaterniond rotatedP = orientation.q * point * orientation.q.inverse(); 
-                Eigen::Vector3d q = p + rotatedP.vec();
-
-                Eigen::Vector3d intersect;
-                // Eigen::Vector3d q = p + sensing_offset[i];
-                if (!map.check_approx_intersection_by_segment(
-                    p, q, intersect))
-                {
-                    Eigen::Vector3d direction = (q - p).normalized(); 
-                    // intersect += m_p.s_m_r/2 * direction;
-                    pcl::PointXYZ add;
-                    add.x = intersect.x();
-                    add.y = intersect.y();
-                    add.z = intersect.z();
-                    tmp->points.push_back(add);
-                }
-
-            }
-
-            return tmp;
-
-        }
-
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr update_occupancy_buffer(
-        //     Eigen::Vector3d c_p, Eigen::Vector3d p_p, 
-        //     pcl::PointCloud<pcl::PointXYZ>::Ptr obs)
-        // {
-        //     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
-
-        //     Eigen::Vector3d d = c_p - p_p;
-        //     // Add unknown surrounding
-        //     // Add in unknown points inside box 2, but not inside box 1
-        //     int v_x = (int)round(d.x() / m_p.m_r);
-        //     int v_y = (int)round(d.y() / m_p.m_r);
-        //     int v_z = (int)round(d.z() / m_p.m_r);
-
-        //     return tmp;
-
-        // }
 };
 
 #endif

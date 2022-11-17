@@ -38,17 +38,31 @@ void lro_rrt_ros_node::pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg
 
     // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    if (!init_cloud)
+    // We have a global cloud received here
+    if (!init_cloud && have_global_cloud)
     {
         init_cloud = true;
         full_cloud = pcl2_converter(*msg);
-        lro_rrt_server::parameters map_param = rrt_param;
-        map_param.r = m_p.m_r;
-        map.set_parameters(map_param);
-        map.update_pose_and_octree(full_cloud, current_point, goal);
 
-        map_param.r = m_p.s_m_r;
-        sliding_map.set_parameters(map_param);
+        sm.set_parameters(
+            m_p.hfov, m_p.vfov, m_p.m_r, 
+            m_p.s_r, m_p.s_m_s,
+            full_cloud, false);
+    }
+    // We have a local cloud received here
+    else if (!have_global_cloud)
+    {
+        init_cloud = true;
+        full_cloud = pcl2_converter(*msg);
+        local_cloud = sm.get_sliding_map_from_sensor(
+            full_cloud, current_pose.pos, current_pose.rot.q);
+        sensor_msgs::PointCloud2 obstacle_msg;
+        // Publish local cloud as a ros message
+        pcl::toROSMsg(*local_cloud, obstacle_msg);
+
+        obstacle_msg.header.frame_id = "world";
+        obstacle_msg.header.stamp = ros::Time::now();
+        local_pcl_pub.publish(obstacle_msg);
     }
 
     return;
@@ -72,32 +86,14 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 
 void lro_rrt_ros_node::local_map_timer(const ros::TimerEvent &)
 {
+    if (!init_cloud)
+        return;
+
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    time_point<std::chrono::system_clock> ray_timer = system_clock::now();
-    pcl::PointCloud<pcl::PointXYZ>::Ptr local_cloud_current = 
-        raycast_pcl_w_fov(current_point);
-    double ray_time = duration<double>(system_clock::now() - ray_timer).count();
-    // std::cout << "raycast time (" << KBLU << ray_time * 1000 << KNRM << "ms)" << std::endl;
-
-    if (!local_cloud_current->points.empty())
-    {
-        *local_cloud_current += *local_cloud;
-        sliding_map.update_pose_and_octree(
-            local_cloud_current, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-    }
-
-    // Update known and unknown regions
-
-    Eigen::Vector3d voxel_center;
-    sliding_map.get_estimated_center_of_point(
-        current_point, voxel_center);
-    
-    sliding_map.extract_point_cloud_within_boundary(
-        current_point, m_p.s_m_s/2, local_cloud);
-    
-    double ray_n_acc_time = duration<double>(system_clock::now() - ray_timer).count();
-    // std::cout << "raycast and accumulation time (" << KBLU << ray_n_acc_time * 1000 << KNRM << "ms)" << std::endl;
+    local_cloud = 
+        sm.get_sliding_map_from_global(
+        current_pose.pos, current_pose.rot.q);
 
     sensor_msgs::PointCloud2 obstacle_msg, detailed_map_msg;
     // Publish local cloud as a ros message
@@ -128,10 +124,10 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
             }
 
         double t = duration<double>(current_time - am_segment.s_e_t.first).count();
-        current_point = am_segment.traj.getPos(t);
+        current_pose.pos = am_segment.traj.getPos(t);
 
         // If the agent has reached its goal
-        if ((goal - current_point).norm() < 0.2)
+        if ((goal - current_pose.pos).norm() < 0.2)
         {
             am.clear();
             state = agent_state::IDLE; 
@@ -145,7 +141,7 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
             acc = am_segment.traj.getAcc(t);
 
             if (vel.norm() > 0.10)
-                orientation.e.z() = atan2(vel.y(), vel.x());
+                current_pose.rot.e.z() = atan2(vel.y(), vel.x());
         }
     }
 
@@ -161,23 +157,19 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
     
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = "world";
-    pose.pose.position.x = current_point.x();
-    pose.pose.position.y = current_point.y();
-    pose.pose.position.z = current_point.z();
+    pose.pose.position.x = current_pose.pos.x();
+    pose.pose.position.y = current_pose.pos.y();
+    pose.pose.position.z = current_pose.pos.z();
 
     calc_uav_orientation(
-        acc, orientation.e.z(), orientation.q, orientation.r);
+        acc, current_pose.rot.e.z(), current_pose.rot.q, current_pose.rot.r);
 
-    pose.pose.orientation.w = orientation.q.w();
-	pose.pose.orientation.x = orientation.q.x();
-	pose.pose.orientation.y = orientation.q.y();
-	pose.pose.orientation.z = orientation.q.z();
+    pose.pose.orientation.w = current_pose.rot.q.w();
+	pose.pose.orientation.x = current_pose.rot.q.x();
+	pose.pose.orientation.y = current_pose.rot.q.y();
+	pose.pose.orientation.z = current_pose.rot.q.z();
 
     pose_pub.publish(pose);
-
-    visualize_points(0.5, rrt_param.s_r*2);
-
-    previous_point = current_point;
 }
 
 void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
@@ -188,7 +180,8 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
         return;
 
     time_point<std::chrono::system_clock> timer = system_clock::now();
-    t_p_sc horizon_time = timer + milliseconds((int)round(reserve_time*1000));
+    t_p_sc horizon_time = 
+        timer + milliseconds((int)round(safety_horizon*1000));
 
     bool bypass = false;
     int index;
@@ -268,9 +261,9 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     else
     {
         // Update the octree with the local cloud
-        rrt.update_pose_and_octree(local_cloud, current_point, goal);
-        start_point = current_point;
-        check_path.push_back(current_point);
+        rrt.update_pose_and_octree(local_cloud, current_pose.pos, goal);
+        start_point = current_pose.pos;
+        check_path.push_back(current_pose.pos);
     }
 
     double update_octree_time = duration<double>(system_clock::now() - 
@@ -294,7 +287,7 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
 
         global_search_path.clear();
         std::vector<Eigen::Vector3d> t_g_s_p;
-        is_safe = rrt.get_path(t_g_s_p);
+        is_safe = rrt.get_path(t_g_s_p, sample_tree);
 
         if (t_g_s_p.empty())
         {
@@ -312,11 +305,19 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
         //     std::cout << p.transpose() << std::endl;
 
         if (!is_safe)
-            std::cout << KRED << "No global path found, " << KNRM <<
+            std::cout << KRED << "[no global path found] " << KNRM <<
                 "using [safe path]" << std::endl;
         
-        nav_msgs::Path global_path = vector_3d_to_path(global_search_path);
+        nav_msgs::Path global_path = 
+            vector_3d_to_path(global_search_path);
         g_rrt_points_pub.publish(global_path);
+
+        if (sample_tree)
+        {
+            visualization_msgs::Marker edges = visualize_line_list(
+                rrt.edges,color_range[0], 0.2, 1, 0.5);
+            debug_pub.publish(edges);
+        }
     }
     
     std::cout << "total search time(" << KGRN <<
