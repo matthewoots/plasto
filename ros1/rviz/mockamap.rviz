@@ -88,7 +88,7 @@ Visualization Manager:
       Queue Size: 10
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.07999999821186066
+      Size (m): 0.05000000074505806
       Style: Boxes
       Topic: /mock_map
       Unreliable: false
@@ -240,4 +240,4 @@ Window Geometry:
     collapsed: true
   Width: 1322
   X: 365
-  Y: 69
+  Y: 32

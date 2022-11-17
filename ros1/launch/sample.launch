@@ -2,11 +2,11 @@
 
 <arg name="map_size" value="40" />
 <arg name="height_size" value="7" />
-<arg name="protected_zone" value="0.35"/>
-<arg name="global_resolution" value="0.20"/>
-<arg name="local_map_resolution" value="$(eval 2.5 * arg('global_resolution'))"/>
+<arg name="protected_zone" value="0.30"/>
+<arg name="global_resolution" value="0.10"/>
+<arg name="local_map_resolution" value="$(eval 5.0 * arg('global_resolution'))"/>
 <arg name="sensor_range" value="5.25"/>
-<arg name="sliding_map_size" value="$(eval 3.5 * arg('sensor_range'))"/>
+<arg name="sliding_map_size" value="$(eval 4.0 * arg('sensor_range'))"/>
 <arg name="mockamap_type" value="2"/>
 <arg name="planning_interval" value="0.15"/>
 
@@ -20,6 +20,8 @@
 <node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
     <param name="ros/simulation" value="true"/>
     <param name="ros/have_global_cloud" value="true"/>
+    <param name="planning/sample_tree" value="true"/>
+
     <param name="ros/threads" value="3"/>
     <param name="ros/simulation_step" value="30"/>
     <param name="ros/map_hz" value="15"/>
@@ -37,7 +39,6 @@
     <param name="planning/scaled_min_dist_from_node" value="0.10"/>
     <rosparam param="planning/height"> [1.0, 2.5] </rosparam>
     <rosparam param="planning/no_fly_zone"> [] </rosparam>
-    <param name="planning/sample_tree" value="true"/>
 
     <param name="map/resolution" value="$(arg local_map_resolution)"/>
     <param name="map/size" value="$(arg map_size)"/>

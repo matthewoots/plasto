@@ -79,7 +79,10 @@ void lro_rrt_ros_node::command_callback(const geometry_msgs::PointConstPtr& msg)
     if (!rrt.initialized())
         rrt.set_parameters(rrt_param);
 
-    state = agent_state::PROCESS_MISSION;
+    if (state == agent_state::IDLE)
+        state = agent_state::PROCESS_MISSION;
+    else if (state == agent_state::EXEC_MISSION)
+        state = agent_state::SWITCH_MISSION;
 
     return;
 }
@@ -127,7 +130,7 @@ void lro_rrt_ros_node::agent_forward_timer(const ros::TimerEvent &)
         current_pose.pos = am_segment.traj.getPos(t);
 
         // If the agent has reached its goal
-        if ((goal - current_pose.pos).norm() < 0.2)
+        if ((goal - current_pose.pos).norm() < 0.1)
         {
             am.clear();
             state = agent_state::IDLE; 
@@ -209,61 +212,94 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     Eigen::Vector3d start_point;
     std::vector<Eigen::Vector3d> check_path, global_search_path;
     int idx;
-    if (state != agent_state::PROCESS_MISSION)
+
+    switch (state)
     {
-        // Select point after adding the time horizon
-        for (idx = 0; idx < (int)am.size(); idx++)
-            if (duration<double>(horizon_time - am[idx].s_e_t.second).count() < 0.0)
-                break;
-        
-        Eigen::Vector3d point;
-
-        double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
-        if (t1 > duration<double>(
-            am[idx].s_e_t.second - am[idx].s_e_t.first).count())
-            return;
-        
-        point = am[idx].traj.getPos(t1);
-
-        // Update the octree with the local cloud
-        rrt.update_pose_and_octree(local_cloud, point, goal);
-        start_point = point;
-
-        // Find the possible trajectory segment it is at
-        // so as to delete the paths before
-        int p1 = am[idx].traj.locatePieceIdx(t1);
-        check_path.push_back(point);
-        for (int i = p1; i < (int)am[idx].traj.pieces.size(); i++)
+        case (agent_state::PROCESS_MISSION):
         {
-            double seg_duration = am[idx].traj.pieces[i].getDuration();
-            if (duration<double>(am[idx].s_e_t.second - 
-                am[idx].s_e_t.first).count() < seg_duration)
-                break;
-
-            check_path.push_back(
-                am[idx].traj[i].getPos(seg_duration));
+            // Update the octree with the local cloud
+            rrt.update_pose_and_octree(local_cloud, current_pose.pos, goal);
+            start_point = current_pose.pos;
+            check_path.push_back(current_pose.pos);
+            break;
         }
-
-        for (int i = idx+1; i < (int)am.size(); i++)
-            for (int j = 0; i < (int)am[i].traj.pieces.size(); j++)
-            {
-                double seg_duration = am[i].traj.pieces[j].getDuration();
-                if (duration<double>(am[i].s_e_t.second - 
-                    am[i].s_e_t.first).count() < seg_duration)
+        case (agent_state::EXEC_MISSION):
+        {
+            // Select point after adding the time horizon
+            for (idx = 0; idx < (int)am.size(); idx++)
+                if (duration<double>(horizon_time - am[idx].s_e_t.second).count() < 0.0)
                     break;
-                
+            
+            Eigen::Vector3d point;
+
+            double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
+            if (t1 > duration<double>(
+                am[idx].s_e_t.second - am[idx].s_e_t.first).count())
+                return;
+            
+            point = am[idx].traj.getPos(t1);
+
+            // Update the octree with the local cloud
+            rrt.update_pose_and_octree(local_cloud, point, goal);
+            start_point = point;
+
+            // Find the possible trajectory segment it is at
+            // so as to delete the paths before
+            int p1 = am[idx].traj.locatePieceIdx(t1);
+            check_path.push_back(point);
+            for (int i = p1; i < (int)am[idx].traj.pieces.size(); i++)
+            {
+                double seg_duration = am[idx].traj.pieces[i].getDuration();
+                if (duration<double>(am[idx].s_e_t.second - 
+                    am[idx].s_e_t.first).count() < seg_duration)
+                    break;
+
                 check_path.push_back(
-                    am[i].traj.pieces[j].getPos(seg_duration));
+                    am[idx].traj[i].getPos(seg_duration));
             }
-        
-    }
-    // state is agent_state::PROCESS_MISSION
-    else
-    {
-        // Update the octree with the local cloud
-        rrt.update_pose_and_octree(local_cloud, current_pose.pos, goal);
-        start_point = current_pose.pos;
-        check_path.push_back(current_pose.pos);
+
+            for (int i = idx+1; i < (int)am.size(); i++)
+                for (int j = 0; i < (int)am[i].traj.pieces.size(); j++)
+                {
+                    double seg_duration = am[i].traj.pieces[j].getDuration();
+                    if (duration<double>(am[i].s_e_t.second - 
+                        am[i].s_e_t.first).count() < seg_duration)
+                        break;
+                    
+                    check_path.push_back(
+                        am[i].traj.pieces[j].getPos(seg_duration));
+                }
+            
+            break;
+        }
+        case (agent_state::SWITCH_MISSION):
+        {
+            // Select point after adding the time horizon
+            for (idx = 0; idx < (int)am.size(); idx++)
+                if (duration<double>(horizon_time - am[idx].s_e_t.second).count() < 0.0)
+                    break;
+            
+            Eigen::Vector3d point;
+
+            double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
+            if (t1 > duration<double>(
+                am[idx].s_e_t.second - am[idx].s_e_t.first).count())
+                return;
+            
+            point = am[idx].traj.getPos(t1);
+
+            // Update the octree with the local cloud
+            rrt.update_pose_and_octree(local_cloud, point, goal);
+            start_point = point;
+            
+            state = agent_state::EXEC_MISSION;
+            is_safe = false;
+            check_path.push_back(point);
+            
+            break;
+        }
+        default:
+            return;
     }
 
     double update_octree_time = duration<double>(system_clock::now() - 
@@ -272,8 +308,8 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     double update_check_time;
     // Check to see whether the previous data extents to the end
     // if previous point last point connects to end point, do bypass    
-    if (rrt.get_path_validity(check_path) || 
-        (goal - start_point).norm() < 0.2)
+    if ((rrt.get_path_validity(check_path) && is_safe) || 
+        (goal - start_point).norm() < 0.1)
     {
         // std::cout << KCYN << "Conducting bypass" << KNRM << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
@@ -365,8 +401,6 @@ void lro_rrt_ros_node::rrt_search_timer(const ros::TimerEvent &)
     
         am.push_back(tmp_am);
     }
-
-    is_safe = true;
 }
 
 void lro_rrt_ros_node::calc_uav_orientation(

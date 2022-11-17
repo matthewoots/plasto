@@ -111,6 +111,7 @@ class lro_rrt_ros_node
         {
             IDLE,
             PROCESS_MISSION,
+            SWITCH_MISSION,
             EXEC_MISSION
         };
 
