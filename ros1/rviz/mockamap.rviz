@@ -3,7 +3,8 @@ Panels:
     Help Height: 78
     Name: Displays
     Property Tree Widget:
-      Expanded: ~
+      Expanded:
+        - /agent01
       Splitter Ratio: 0.46109509468078613
     Tree Height: 540
   - Class: rviz/Selection
@@ -173,6 +174,14 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /safe_corridor
+          Name: safe_corridor
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
       Enabled: true
       Name: agent0
   Enabled: true
@@ -240,4 +249,4 @@ Window Geometry:
     collapsed: true
   Width: 1322
   X: 365
-  Y: 32
+  Y: 30

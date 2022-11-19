@@ -10,14 +10,14 @@
 <arg name="mockamap_type" value="2"/>
 <arg name="planning_interval" value="0.15"/>
 
-<include file="$(find lro_rrt_ros)/launch/gen_mockamap.launch">
+<include file="$(find plasto)/launch/gen_mockamap.launch">
     <arg name="size" value="$(arg map_size)" />
     <arg name="height" value="$(arg height_size)" />
     <arg name="resolution" value="$(arg global_resolution)" />
     <arg name="type" value="$(arg mockamap_type)" />
 </include>
 
-<node pkg="lro_rrt_ros" type="lro_rrt_ros_node" name="lro_rrt_ros_node" output="screen">
+<node pkg="plasto" type="plasto_node" name="plasto_node" output="screen">
     <param name="ros/simulation" value="true"/>
     <param name="ros/have_global_cloud" value="true"/>
     <param name="planning/sample_tree" value="true"/>
@@ -29,21 +29,22 @@
     <param name="sliding_map/size" value="$(arg sliding_map_size)"/>
 
     <param name="planning/runtime_error" value="0.0050"/>
-    <param name="planning/refinement_time" value="0.001"/>
+    <param name="planning/refinement_time" value="0.002"/>
     <param name="planning/sensor_range" value="$(arg sensor_range)"/>
-    <param name="planning/sensor_buffer_multiplier" value="2.0"/>
+    <param name="planning/sensor_buffer_multiplier" value="2.5"/>
     <param name="planning/interval" value="$(arg planning_interval)"/>
     <param name="planning/resolution" value="$(arg protected_zone)"/>
-    <rosparam param="planning/search_limit_hfov"> [0.10, 0.90] </rosparam>
-    <rosparam param="planning/search_limit_vfov"> [0.125, 0.875] </rosparam>
+    <rosparam param="planning/search_limit_hfov"> [0.05, 0.95] </rosparam>
+    <rosparam param="planning/search_limit_vfov"> [0.10, 0.90] </rosparam>
     <param name="planning/scaled_min_dist_from_node" value="0.10"/>
-    <rosparam param="planning/height"> [1.0, 2.5] </rosparam>
+    <rosparam param="planning/height"> [1.0, 3.0] </rosparam>
     <rosparam param="planning/no_fly_zone"> [] </rosparam>
 
     <param name="map/resolution" value="$(arg local_map_resolution)"/>
     <param name="map/size" value="$(arg map_size)"/>
     <param name="map/vfov" value="1.40"/>
     <param name="map/hfov" value="2.0944"/>
+    <param name="sliding_map/distance_threshold" value="3.0"/>
 
     <param name="amtraj/weight/time_regularization" value="1024.0"/>
     <param name="amtraj/weight/acceleration" value="15.0"/>
@@ -60,6 +61,6 @@
 
 <!-- Launch RViz with the demo configuration -->
 <node name="rviz" pkg="rviz" type="rviz"
-    args="-d $(find lro_rrt_ros)/rviz/mockamap.rviz"/>
+    args="-d $(find plasto)/rviz/mockamap.rviz"/>
 
 </launch>

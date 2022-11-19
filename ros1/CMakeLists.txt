@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(lro_rrt_ros)
+project(plasto)
 
 # Set target C++ standard and required compiler features
 set(CMAKE_CXX_STANDARD 14)
@@ -42,7 +42,8 @@ add_subdirectory(../lib_octree_local_map lib_olm)
 
 add_executable(${PROJECT_NAME}_node 
     src/main.cpp
-    src/lro_rrt_ros.cpp
+    src/plasto.cpp
+    src/helper.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}_node 

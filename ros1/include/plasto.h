@@ -1,5 +1,5 @@
 /*
-* lro_rrt_ros.h
+* plasto.h
 *
 * ---------------------------------------------------------------------
 * Copyright (C) 2022 Matthew (matthewoots at gmail.com)
@@ -15,8 +15,8 @@
 *  GNU General Public License for more details.
 * ---------------------------------------------------------------------
 */
-#ifndef LRO_RRT_ROS_H
-#define LRO_RRT_ROS_H
+#ifndef PLASTO_ROS_H
+#define PLASTO_ROS_H
 
 #include "lro_rrt_server.h"
 #include "mapper.h"
@@ -55,7 +55,7 @@
 #define KCYN  "\033[36m"
 #define KWHT  "\033[37m"
 
-using namespace Eigen;
+// using namespace Eigen;
 using namespace std;
 using namespace std::chrono; // nanoseconds, system_clock, seconds
 using namespace lro_rrt_server;
@@ -63,7 +63,7 @@ using namespace octree_map;
 
 typedef time_point<std::chrono::system_clock> t_p_sc; // giving a typename
 
-class lro_rrt_ros_node
+class plasto_node
 {
     private:
 
@@ -132,15 +132,16 @@ class lro_rrt_ros_node
 
         ros::Subscriber pcl2_msg_sub, command_sub;
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
-        ros::Publisher pose_pub, debug_pcl_pub, debug_pub;
+        ros::Publisher pose_pub, debug_pcl_pub, debug_pub, safe_corridor_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
 
         Eigen::Vector3d goal;
         pose current_pose;
 
-        vector<Eigen::Vector4d> no_fly_zone;
+        std::vector<Eigen::Vector3d> global_setpoints;
 
+        std::vector<Eigen::Vector4d> no_fly_zone;
         std::vector<Eigen::Vector4d> color_range;
 
         double simulation_hz, map_hz, duration_committed, default_knot_spacing;
@@ -151,7 +152,7 @@ class lro_rrt_ros_node
             sample_tree = false;
         orientation orientation;
 
-        double safety_horizon, reached_threshold;
+        double safety_horizon, reached_threshold, distance_threshold;
 
         bool init_cloud = false, emergency_stop = false;
 
@@ -162,113 +163,36 @@ class lro_rrt_ros_node
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
 
         /** @brief Timers for searching and agent movement **/
-        ros::Timer search_timer, agent_timer, map_timer;
-        void rrt_search_timer(const ros::TimerEvent &);
+        ros::Timer planning_timer, agent_timer, map_timer;
+        void plasto_timer(const ros::TimerEvent &);
         void agent_forward_timer(const ros::TimerEvent &);
         void local_map_timer(const ros::TimerEvent &);
 
         void calc_uav_orientation(
             Eigen::Vector3d acc, double yaw_rad, Eigen::Quaterniond &q, Eigen::Matrix3d &r);
 
-        int error_counter;
-
-        nav_msgs::Path vector_3d_to_path(vector<Vector3d> path_vector)
-        {
-            nav_msgs::Path path;
-            path.header.stamp = ros::Time::now();
-            path.header.frame_id = "world";
-            for (int i = 0; i < path_vector.size(); i++)
-            {
-                geometry_msgs::PoseStamped pose;
-                pose.pose.position.x = path_vector[i][0];
-                pose.pose.position.y = path_vector[i][1];
-                pose.pose.position.z = path_vector[i][2];
-                path.poses.push_back(pose);
-            }
-
-            return path;
-        }
-
-        visualization_msgs::Marker visualize_points(
-            vector<Eigen::Vector3d> points_vect, 
-            Eigen::Vector4d color, double scale, int index)
-        {
-            visualization_msgs::Marker points;
-            points.header.frame_id = "world";
-            points.header.stamp = ros::Time::now();
-            points.type = visualization_msgs::Marker::POINTS;
-            points.action = visualization_msgs::Marker::ADD;
-
-            points.id = index;
-
-            points.color.r = color(0);
-            points.color.g = color(1);
-            points.color.b = color(2);
-
-            points.color.a = color(3);
-
-            points.scale.x = scale;
-            points.scale.y = scale;
-            
-            // Create the vertices point
-            for (Eigen::Vector3d &vect : points_vect)
-            {
-                geometry_msgs::Point p1;
-                p1.x = vect.x();
-                p1.y = vect.y();
-                p1.z = vect.z();
-
-                points.points.push_back(p1);
-            }
-
-            return points;
-        }
-
         visualization_msgs::Marker visualize_line_list(
             vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> vect_vert, 
-            Eigen::Vector4d color, double scale, int index, double transparency)
-        {
-            visualization_msgs::Marker lines;
-            lines.header.frame_id = "world";
-            lines.header.stamp = ros::Time::now();
-            lines.type = visualization_msgs::Marker::LINE_LIST;
-            lines.action = visualization_msgs::Marker::ADD;
+            Eigen::Vector4d color, double scale, int index, double transparency);
+        
+        visualization_msgs::Marker visualize_points(
+            vector<Eigen::Vector3d> points_vect, 
+            Eigen::Vector4d color, double scale, int index);
+        
+        nav_msgs::Path vector_3d_to_path(
+            vector<Vector3d> path_vector);
 
-            lines.id = index;
+        visualization_msgs::Marker 
+            visualize_triangle_list(Eigen::Vector4d color,
+            std::vector<octree_map::sliding_map::triangles> tri);
 
-            lines.color.r = color(0);
-            lines.color.g = color(1);
-            lines.color.b = color(2);
-
-            lines.color.a = transparency;
-
-            lines.scale.x = scale;
-            
-            // Create the vertices line list
-            for (std::pair<Eigen::Vector3d, Eigen::Vector3d> &vert_pair : vect_vert)
-            {
-                geometry_msgs::Point p1, p2;
-                p1.x = vert_pair.first.x();
-                p2.x = vert_pair.second.x();
-
-                p1.y = vert_pair.first.y();
-                p2.y = vert_pair.second.y();
-
-                p1.z = vert_pair.first.z();
-                p2.z = vert_pair.second.z();
-
-                lines.points.push_back(p1);
-                lines.points.push_back(p2);
-            }
-
-            return lines;
-        }
+        int error_counter;
 
     public:
 
         int threads;
 
-        lro_rrt_ros_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
+        plasto_node(ros::NodeHandle &nodeHandle) : _nh(nodeHandle)
         {
             /** @brief ROS Params */
 
@@ -317,6 +241,8 @@ class lro_rrt_ros_node
             _nh.param<double>("map/size", map_size, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
             _nh.param<double>("map/hfov", m_p.hfov, -1.0);
+            _nh.param<double>("sliding_map/distance_threshold", 
+                distance_threshold, -1.0);
 
             _nh.param<double>("sliding_map/size", m_p.s_m_s, -1.0);
 
@@ -332,9 +258,9 @@ class lro_rrt_ros_node
             _nh.param<double>("safety/reached_threshold", reached_threshold, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
-                "/mock_map", 1,  boost::bind(&lro_rrt_ros_node::pcl2_callback, this, _1));
+                "/mock_map", 1,  boost::bind(&plasto_node::pcl2_callback, this, _1));
             command_sub = _nh.subscribe<geometry_msgs::Point>(
-                "/goal", 1,  boost::bind(&lro_rrt_ros_node::command_callback, this, _1));
+                "/goal", 1,  boost::bind(&plasto_node::command_callback, this, _1));
 
             /** @brief For debug */
             local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/local_map", 10);
@@ -343,17 +269,19 @@ class lro_rrt_ros_node
             debug_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/debug_map", 10);
             debug_pub = _nh.advertise
                 <visualization_msgs::Marker>("/debug_points", 10);
+            safe_corridor_pub = _nh.advertise
+                <visualization_msgs::Marker>("/safe_corridor", 10);
 
             /** @brief Timer for the rrt search and agent */
-		    search_timer = _nh.createTimer(
+		    planning_timer = _nh.createTimer(
                 ros::Duration(rrt_param.s_i), 
-                &lro_rrt_ros_node::rrt_search_timer, this, false, false);
+                &plasto_node::plasto_timer, this, false, false);
             agent_timer = _nh.createTimer(
                 ros::Duration(1/simulation_hz), 
-                &lro_rrt_ros_node::agent_forward_timer, this, false, false);
+                &plasto_node::agent_forward_timer, this, false, false);
             map_timer = _nh.createTimer(
                 ros::Duration(1/map_hz), 
-                &lro_rrt_ros_node::local_map_timer, this, false, false);
+                &plasto_node::local_map_timer, this, false, false);
 
             /** @brief Choose a color for the trajectory using random values **/
             std::random_device dev;
@@ -387,7 +315,7 @@ class lro_rrt_ros_node
                 sm.set_parameters(
                     m_p.hfov, m_p.vfov, m_p.m_r, 
                     m_p.s_r, m_p.s_m_s,
-                    full_cloud, true);
+                    full_cloud, true, distance_threshold);
 
             state = agent_state::IDLE;
 
@@ -397,10 +325,10 @@ class lro_rrt_ros_node
                 map_timer.start();
             }
             
-            search_timer.start();
+            planning_timer.start();
         }
 
-        ~lro_rrt_ros_node()
+        ~plasto_node()
         {
             // Clear all the points within the clouds
             full_cloud->points.clear();
@@ -408,7 +336,7 @@ class lro_rrt_ros_node
 
             // Stop all the timers
             agent_timer.stop();
-            search_timer.stop();
+            planning_timer.stop();
             map_timer.stop();
         }
 

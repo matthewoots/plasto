@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>lro_rrt_ros</name>
+  <name>plasto</name>
   <version>0.0.0</version>
-  <description>lro_rrt_ros</description>
+  <description>plasto</description>
   <maintainer email="matthewoots@gmail.com">Matthew Woo</maintainer>
   <license>TODO</license>
 

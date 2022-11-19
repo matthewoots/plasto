@@ -17,7 +17,7 @@
 */
 
 #include <ros/ros.h>
-#include "lro_rrt_ros.h"
+#include "plasto.h"
 
 #define KNRM  "\033[0m"
 #define KRED  "\033[31m"
@@ -30,10 +30,10 @@
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "lro_rrt_ros_node");
+    ros::init(argc, argv, "plasto_node");
     ros::NodeHandle nh("~");
-    lro_rrt_ros_node lro_rrt_ros_node(nh);
-    ros::MultiThreadedSpinner spinner(lro_rrt_ros_node.threads);
+    plasto_node plasto_node(nh);
+    ros::MultiThreadedSpinner spinner(plasto_node.threads);
     spinner.spin();
     return 0;
 }
