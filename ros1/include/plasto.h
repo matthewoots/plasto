@@ -130,7 +130,7 @@ class plasto_node
 
         ros::NodeHandle _nh;
 
-        ros::Subscriber pcl2_msg_sub, command_sub;
+        ros::Subscriber pcl2_msg_sub, command_sub, pose_sub;
         ros::Publisher local_pcl_pub, g_rrt_points_pub;
         ros::Publisher pose_pub, debug_pcl_pub, debug_pub, safe_corridor_pub;
         
@@ -149,7 +149,9 @@ class plasto_node
         bool is_safe = false, 
             simulation = false, 
             have_global_cloud = false,
-            sample_tree = false;
+            sample_tree = false,
+            is_enu = false,
+            get_first_pose = false;
         orientation orientation;
 
         double safety_horizon, reached_threshold, distance_threshold;
@@ -161,6 +163,8 @@ class plasto_node
         /** @brief Callbacks, mainly for loading pcl and commands **/
         void command_callback(const geometry_msgs::PointConstPtr& msg);
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
+        void pose_callback(const geometry_msgs::PoseStampedConstPtr& msg);
+
 
         /** @brief Timers for searching and agent movement **/
         ros::Timer planning_timer, agent_timer, map_timer;
@@ -205,6 +209,7 @@ class plasto_node
             _nh.param<int>("ros/threads", threads, -1);
             _nh.param<double>("ros/simulation_hz", simulation_hz, -1.0);
             _nh.param<double>("ros/map_hz", map_hz, -1.0);
+            _nh.param<bool>("ros/using_enu", is_enu, false);
 
             _nh.param<double>("planning/runtime_error", rrt_param.r_e, -1.0);
             _nh.param<double>("planning/refinement_time", rrt_param.r_t, -1.0);
@@ -258,19 +263,21 @@ class plasto_node
             _nh.param<double>("safety/reached_threshold", reached_threshold, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
-                "/mock_map", 1,  boost::bind(&plasto_node::pcl2_callback, this, _1));
+                "mock_map", 1,  boost::bind(&plasto_node::pcl2_callback, this, _1));
             command_sub = _nh.subscribe<geometry_msgs::Point>(
-                "/goal", 1,  boost::bind(&plasto_node::command_callback, this, _1));
+                "goal", 1,  boost::bind(&plasto_node::command_callback, this, _1));
+            pose_sub = _nh.subscribe<geometry_msgs::PoseStamped>(
+                "pose", 1,  boost::bind(&plasto_node::pose_callback, this, _1));
 
             /** @brief For debug */
-            local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/local_map", 10);
-            pose_pub = _nh.advertise<geometry_msgs::PoseStamped>("/pose", 10);
-            g_rrt_points_pub = _nh.advertise<nav_msgs::Path>("/rrt_points_global", 10);
-            debug_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("/debug_map", 10);
+            local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("local_map", 10);
+            pose_pub = _nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
+            g_rrt_points_pub = _nh.advertise<nav_msgs::Path>("rrt_points_global", 10);
+            debug_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("debug_map", 10);
             debug_pub = _nh.advertise
-                <visualization_msgs::Marker>("/debug_points", 10);
+                <visualization_msgs::Marker>("debug_points", 10);
             safe_corridor_pub = _nh.advertise
-                <visualization_msgs::Marker>("/safe_corridor", 10);
+                <visualization_msgs::Marker>("safe_corridor", 10);
 
             /** @brief Timer for the rrt search and agent */
 		    planning_timer = _nh.createTimer(
@@ -316,14 +323,13 @@ class plasto_node
                     m_p.hfov, m_p.vfov, m_p.m_r, 
                     m_p.s_r, m_p.s_m_s,
                     full_cloud, true, distance_threshold);
+            else
+                map_timer.start();
 
             state = agent_state::IDLE;
 
             if (simulation)
-            {
                 agent_timer.start();
-                map_timer.start();
-            }
             
             planning_timer.start();
         }

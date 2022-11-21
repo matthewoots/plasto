@@ -2,7 +2,7 @@
 
 <arg name="map_size" value="40" />
 <arg name="height_size" value="7" />
-<arg name="protected_zone" value="0.30"/>
+<arg name="protected_zone" value="0.29"/>
 <arg name="global_resolution" value="0.10"/>
 <arg name="local_map_resolution" value="$(eval 5.0 * arg('global_resolution'))"/>
 <arg name="sensor_range" value="5.25"/>
@@ -20,6 +20,7 @@
 <node pkg="plasto" type="plasto_node" name="plasto_node" output="screen">
     <param name="ros/simulation" value="true"/>
     <param name="ros/have_global_cloud" value="true"/>
+    <param name="ros/using_enu" value="false"/>
     <param name="planning/sample_tree" value="true"/>
 
     <param name="ros/threads" value="3"/>

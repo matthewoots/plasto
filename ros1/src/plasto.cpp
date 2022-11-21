@@ -32,6 +32,40 @@ using namespace std;
 using namespace Eigen;
 using namespace lro_rrt_server;
 
+void plasto_node::pose_callback(
+    const geometry_msgs::PoseStampedConstPtr& msg)
+{
+    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+
+    Eigen::Affine3d transform;
+
+    // local position in frame
+	transform.translation() = Vector3d(
+		msg->pose.position.x,
+		msg->pose.position.y,
+		msg->pose.position.z
+	);
+	// local rotation in frame
+	transform.linear() = Quaterniond(
+		msg->pose.orientation.w,
+		msg->pose.orientation.x,
+		msg->pose.orientation.y,
+		msg->pose.orientation.z).toRotationMatrix();
+
+    if (is_enu)
+    {
+        // Conversion (rotation) from enu to nwu in the form of w, x, y, z
+        // enu to nwu
+        transform.rotate(
+            Quaterniond(0.7073883, 0, 0, 0.7068252).inverse());
+    }
+
+    current_pose.pos = transform.translation();
+    current_pose.rot.q = transform.linear();
+
+    get_first_pose = true;
+}
+
 void plasto_node::pcl2_callback(
     const sensor_msgs::PointCloud2ConstPtr& msg)
 {
@@ -91,6 +125,9 @@ void plasto_node::command_callback(const geometry_msgs::PointConstPtr& msg)
 void plasto_node::local_map_timer(const ros::TimerEvent &)
 {
     if (!init_cloud)
+        return;
+
+    if (!get_first_pose && !simulation)
         return;
 
     t_p_sc mapper_start = system_clock::now();
