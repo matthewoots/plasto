@@ -3,8 +3,8 @@
 <arg name="map_size" value="40" />
 <arg name="height_size" value="7" />
 <arg name="protected_zone" value="0.29"/>
-<arg name="global_resolution" value="0.10"/>
-<arg name="local_map_resolution" value="$(eval 5.0 * arg('global_resolution'))"/>
+<arg name="global_resolution" value="0.20"/>
+<arg name="local_map_resolution" value="$(eval 2.5 * arg('global_resolution'))"/>
 <arg name="sensor_range" value="5.25"/>
 <arg name="sliding_map_size" value="$(eval 4.0 * arg('sensor_range'))"/>
 <arg name="mockamap_type" value="2"/>
@@ -18,6 +18,10 @@
 </include>
 
 <node pkg="plasto" type="plasto_node" name="plasto_node" output="screen">
+    
+    <remap from="/plasto_node/map" 
+        to="/mock_map"/>
+
     <param name="ros/simulation" value="true"/>
     <param name="ros/have_global_cloud" value="true"/>
     <param name="ros/using_enu" value="false"/>
@@ -48,10 +52,11 @@
     <param name="sliding_map/distance_threshold" value="3.0"/>
 
     <param name="amtraj/weight/time_regularization" value="1024.0"/>
-    <param name="amtraj/weight/acceleration" value="15.0"/>
-    <param name="amtraj/weight/jerk" value="0.6"/>
-    <param name="amtraj/limits/max_vel" value="5.00"/>
-    <param name="amtraj/limits/max_acc" value="12.00"/>
+    <param name="amtraj/weight/acceleration" value="15.0"/> 
+    <param name="amtraj/weight/jerk" value="1.0"/>
+    <!-- 0.6 -->
+    <param name="amtraj/limits/max_vel" value="4.00"/>
+    <param name="amtraj/limits/max_acc" value="10.00"/>
     <param name="amtraj/limits/iterations" value="23"/>
     <param name="amtraj/limits/epsilon" value="0.2"/>
 

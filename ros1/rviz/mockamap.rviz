@@ -100,7 +100,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/Marker
           Enabled: true
-          Marker Topic: /debug_points
+          Marker Topic: /plasto_node/debug_points
           Name: tree
           Namespaces:
             {}
@@ -119,7 +119,7 @@ Visualization Manager:
           Shaft Length: 1
           Shaft Radius: 0.05000000074505806
           Shape: Axes
-          Topic: /pose
+          Topic: /plasto_node/pose
           Unreliable: false
           Value: true
         - Alpha: 1
@@ -143,7 +143,7 @@ Visualization Manager:
           Radius: 0.029999999329447746
           Shaft Diameter: 0.10000000149011612
           Shaft Length: 0.10000000149011612
-          Topic: /rrt_points_global
+          Topic: /plasto_node/rrt_points_global
           Unreliable: false
           Value: true
         - Alpha: 1
@@ -169,14 +169,14 @@ Visualization Manager:
           Size (Pixels): 6
           Size (m): 0.10000000149011612
           Style: Points
-          Topic: /local_map
+          Topic: /plasto_node/local_map
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
         - Class: rviz/Marker
           Enabled: true
-          Marker Topic: /safe_corridor
+          Marker Topic: /plasto_node/safe_corridor
           Name: safe_corridor
           Namespaces:
             {}

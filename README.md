@@ -22,6 +22,9 @@ Some benefits in this module
 
 ## Setup
 ```bash
+# install mavros_msg first this is what we are using to communicate to the uav
+sudo apt-get install ros-<ros_distro>-mavros-msgs
+
 mkdir -p catkin_ws/src
 cd catkin_ws/src
 git clone https://github.com/matthewoots/lro_rrt_ros --recurse-submodules

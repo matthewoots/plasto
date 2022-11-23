@@ -62,6 +62,14 @@ void plasto_node::pose_callback(
 
     current_pose.pos = transform.translation();
     current_pose.rot.q = transform.linear();
+    current_pose.rot.e.z() = 
+        euler_rpy(transform.linear()).z();
+
+    if (!init_last_pose)
+    {
+        last_goal_pos = current_pose.pos;
+        init_last_pose = true;
+    }
 
     get_first_pose = true;
 }
@@ -103,13 +111,18 @@ void plasto_node::pcl2_callback(
     return;
 }
 
-void plasto_node::command_callback(const geometry_msgs::PointConstPtr& msg)
+void plasto_node::command_callback(
+    const geometry_msgs::PoseStampedConstPtr& msg)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    geometry_msgs::Point pos = *msg;
+    geometry_msgs::PoseStamped pos = *msg;
 
-    goal = Eigen::Vector3d(pos.x, pos.y, pos.z);
+    goal = Eigen::Vector3d(
+        pos.pose.position.x, 
+        pos.pose.position.y, 
+        pos.pose.position.z
+    );
 
     if (!rrt.initialized())
         rrt.set_parameters(rrt_param);
@@ -118,6 +131,12 @@ void plasto_node::command_callback(const geometry_msgs::PointConstPtr& msg)
         state = agent_state::PROCESS_MISSION;
     else if (state == agent_state::EXEC_MISSION)
         state = agent_state::SWITCH_MISSION;
+    
+    // Every time a command is executed, 
+    // save the current state (using the callback) as fallback
+    init_last_pose = false;
+
+    printf("[plasto] received command\n");
 
     return;
 }
@@ -127,10 +146,10 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
     if (!init_cloud)
         return;
 
-    if (!get_first_pose && !simulation)
+    if (!get_first_pose)
         return;
 
-    t_p_sc mapper_start = system_clock::now();
+    // t_p_sc mapper_start = system_clock::now();
 
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
     local_cloud = 
@@ -145,22 +164,61 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
     obstacle_msg.header.stamp = ros::Time::now();
     local_pcl_pub.publish(obstacle_msg);
 
-    double total = duration<double>(system_clock::now() - mapper_start).count() * 1000;
-    std::cout << "mapping duration (" << KGRN <<
-        total << "ms" << KNRM << ")" << std::endl;
+    // double total = duration<double>(system_clock::now() - mapper_start).count() * 1000;
+    // std::cout << "mapping duration (" << KGRN <<
+    //     total << "ms" << KNRM << ")" << std::endl;
 
 }
 
-void plasto_node::agent_forward_timer(const ros::TimerEvent &)
+void plasto_node::agent_command_timer(const ros::TimerEvent &)
 {
     std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    Eigen::Vector3d vel, acc;
-    if (state == agent_state::EXEC_MISSION && !emergency_stop)
+    double yaw;
+
+    if (emergency_stop)
+    {
+        double t = duration<double>(system_clock::now() - emergency_stop_time).count();
+        if (t > 0.25)
+        {
+            emergency_stop = false;
+            state = agent_state::PROCESS_MISSION;
+            last_goal_pos = current_pose.pos;
+            init_last_pose = true;
+            return;
+        }
+    }
+
+    bool stop = false;
+    if (!am.empty())
+    {
+        stop = 
+            abs(duration<double>(system_clock::now() - 
+            am.back().s_e_t.second).count()) < rrt_param.s_i*1.2;
+        // printf("size %d, %lf\n", (int)am.size(),
+        //     duration<double>(system_clock::now() - 
+        //     am.back().s_e_t.second).count());
+    }
+
+    // If the agent has reached its goal
+    if ((goal - current_pose.pos).norm() < 0.10 || stop)
+    {
+        am.clear();
+        state = agent_state::IDLE;
+        last_goal_pos = pos;
+        is_safe = false;
+        printf("trajectory completed\n");
+    }
+
+    if (state == agent_state::EXEC_MISSION || 
+        state == agent_state::SWITCH_MISSION)
     {
         // Choose the path within the vector of trajectories
         t_p_sc current_time = system_clock::now();
         
+        if (am.empty())
+            return;
+
         am_trajectory am_segment;
         for (am_trajectory &current_am : am)
             if (duration<double>(current_time - current_am.s_e_t.second).count() <= 0.0)
@@ -170,52 +228,117 @@ void plasto_node::agent_forward_timer(const ros::TimerEvent &)
             }
 
         double t = duration<double>(current_time - am_segment.s_e_t.first).count();
-        current_pose.pos = am_segment.traj.getPos(t);
+        pos = am_segment.traj.getPos(t);
 
-        // If the agent has reached its goal
-        if ((goal - current_pose.pos).norm() < 0.1)
-        {
-            am.clear();
-            state = agent_state::IDLE; 
-            is_safe = false;
-            printf("trajectory completed\n");
-        }
+        
         // If the agent has not reached its goal
+        vel = am_segment.traj.getVel(t);
+        acc = am_segment.traj.getAcc(t);
+
+        double dist = -FLT_MAX;
+        Eigen::Vector3d intersection_point;
+        bool intersect_found = false;
+        double offset = 0.0;
+
+        if (!sfc_polygon.empty() && 
+            (goal - current_pose.pos).norm() > 1.00)
+            for (int i = 0; i < global_setpoints.size()-1; i++)
+            {
+                if (i > 0)
+                    offset += 
+                        (global_setpoints[i-1] - 
+                        global_setpoints[i]).norm();
+                
+                for (auto &sfc : sfc_polygon)
+                {
+                    // This is a tricky scenario since the line may intersect the polygon 2 times
+                    // Get the furthest from origin
+                    for (auto &tri : sfc.tri_idx)
+                    {
+                        Eigen::Vector3d intersection_point_tmp;
+                        double distance_tmp;
+                        if (rayTriangleIntersect(
+                            global_setpoints[i], global_setpoints[i+1],
+                            sfc.vert[tri[0]], sfc.vert[tri[1]], sfc.vert[tri[2]],
+                            distance_tmp, intersection_point_tmp))
+                        {
+                            if (offset + distance_tmp > dist)
+                            {
+                                intersection_point = intersection_point_tmp;
+                                dist = offset + distance_tmp;
+                            }
+                            intersect_found = true;
+                        }
+                    }
+                }
+            }
+        
+        if (intersect_found)
+        {
+            Eigen::Vector3d yaw_direction = 
+                (intersection_point - current_pose.pos).normalized();
+            yaw = atan2(yaw_direction.y(), yaw_direction.x());
+            last_yaw = yaw;
+            // printf("intersect yaw %lf\n", yaw);
+        }
         else
         {
-            vel = am_segment.traj.getVel(t);
-            acc = am_segment.traj.getAcc(t);
-
-            if (vel.norm() > 0.10)
-                current_pose.rot.e.z() = atan2(vel.y(), vel.x());
+            yaw = last_yaw;
+            // printf("no intersect yaw %lf\n", yaw);
         }
+        
     }
-
-    if (emergency_stop)
+    else
     {
-        double t = duration<double>(system_clock::now() - emergency_stop_time).count();
-        if (t > 1.0)
-        {
-            emergency_stop = false;
-            state = agent_state::PROCESS_MISSION;
-        }
+        pos = last_goal_pos;
+        yaw = current_pose.rot.e.z();
     }
     
-    geometry_msgs::PoseStamped pose;
-    pose.header.frame_id = "world";
-    pose.pose.position.x = current_pose.pos.x();
-    pose.pose.position.y = current_pose.pos.y();
-    pose.pose.position.z = current_pose.pos.z();
+    if (simulation)
+    {
+        current_pose.pos = pos;
+        current_pose.rot.e.z() = yaw;
+        
+        geometry_msgs::PoseStamped pose;
+        pose.header.frame_id = "world";
+        pose.pose.position.x = current_pose.pos.x();
+        pose.pose.position.y = current_pose.pos.y();
+        pose.pose.position.z = current_pose.pos.z();
 
-    calc_uav_orientation(
-        acc, current_pose.rot.e.z(), current_pose.rot.q, current_pose.rot.r);
+        calc_uav_orientation(
+            acc, current_pose.rot.e.z(), current_pose.rot.q, current_pose.rot.r);
 
-    pose.pose.orientation.w = current_pose.rot.q.w();
-	pose.pose.orientation.x = current_pose.rot.q.x();
-	pose.pose.orientation.y = current_pose.rot.q.y();
-	pose.pose.orientation.z = current_pose.rot.q.z();
+        pose.pose.orientation.w = current_pose.rot.q.w();
+        pose.pose.orientation.x = current_pose.rot.q.x();
+        pose.pose.orientation.y = current_pose.rot.q.y();
+        pose.pose.orientation.z = current_pose.rot.q.z();
 
-    pose_pub.publish(pose);
+        pose_pub.publish(pose);
+
+        last_goal_pos = pos;
+        get_first_pose = true;
+    }
+    // Not in a simulation
+    else if (!simulation)
+    // else if (!simulation && state != agent_state::IDLE)
+    {
+        mavros_msgs::PositionTarget target;
+        target.position.x = pos.x();
+        target.position.y = pos.y();
+        target.position.z = pos.z();
+
+        target.velocity.x = vel.x();
+        target.velocity.y = vel.y();
+        target.velocity.z = vel.z();
+
+        target.acceleration_or_force.x = acc.x();
+        target.acceleration_or_force.y = acc.y();
+        target.acceleration_or_force.z = acc.z();
+
+        target.yaw = yaw;
+
+        command_pub.publish(target);
+    }
 }
 
 void plasto_node::plasto_timer(const ros::TimerEvent &)
@@ -225,10 +348,16 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
     if (state == agent_state::IDLE)
         return;
 
+    if (!init_last_pose)
+        return;
+
     t_p_sc planner_start = system_clock::now();
 
     std::vector<octree_map::sliding_map::triangles> tri_vector =
         sm.visualize_safe_corridor();
+    
+    sfc_polygon.clear();
+    sfc_polygon = tri_vector;
 
     visualization_msgs::Marker safe_corridor = 
         visualize_triangle_list(color_range[2], tri_vector);
@@ -267,7 +396,7 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
 
     Eigen::Vector3d start_point;
     std::vector<Eigen::Vector3d> check_path, global_search_path;
-    int idx;
+    int idx = 0;
 
     /**
      * @brief 
@@ -299,7 +428,12 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             if (t1 > duration<double>(
                 am[idx].s_e_t.second - am[idx].s_e_t.first).count())
                 return;
-            
+            // double time = duration<double>(
+            //     horizon_time - am[idx].s_e_t.second).count();
+            // printf("size of am %d\n", (int)am.size());    
+            // printf("given time of %d %lf\n", 
+            //     idx, time);
+
             point = am[idx].traj.getPos(t1);
 
             // Update the octree with the local cloud
@@ -337,25 +471,58 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
         }
         case (agent_state::SWITCH_MISSION):
         {
-            // Select point after adding the time horizon
-            for (idx = 0; idx < (int)am.size(); idx++)
-                if (duration<double>(horizon_time - am[idx].s_e_t.second).count() < 0.0)
-                    break;
-            
             Eigen::Vector3d point;
+            printf("empty am %s\n", am.empty() ? "yes" : "no");
 
-            double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
-            if (t1 > duration<double>(
-                am[idx].s_e_t.second - am[idx].s_e_t.first).count())
-                return;
-            
-            point = am[idx].traj.getPos(t1);
+            // printf("switching here\n");
+            // Select point after adding the time horizon
+            if (!am.empty())
+            {
+                printf("size of am %d\n", (int)am.size());
+                for (idx = 0; idx < (int)am.size(); idx++)
+                    if (duration<double>(horizon_time - 
+                        am[idx].s_e_t.second).count() < 0.0)
+                        break;
+                
+                idx = min((int)am.size()-1, idx);
+
+                double time = duration<double>(
+                    horizon_time - am[idx].s_e_t.second).count();
+                printf("given time of %d %lf\n", 
+                    idx, time);
+
+                double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
+                // if (t1 > duration<double>(
+                //     am[idx].s_e_t.second - am[idx].s_e_t.first).count())
+                //     return;
+                // The horizon time is outside of the last time point of the trajectory
+                if (duration<double>(
+                    horizon_time - am[idx].s_e_t.second).count() > 0 
+                    && idx == am.size()-1)
+                {
+                    // printf("out of scope\n");
+                    horizon_time = am[idx].s_e_t.second - 
+                        milliseconds(5);
+                    t1 = duration<double>(
+                        horizon_time - am[idx].s_e_t.first).count();
+                }
+                
+                point = am[idx].traj.getPos(t1);
+                state = agent_state::EXEC_MISSION;
+            }
+            else
+            {
+                am.clear();
+                point = current_pose.pos;
+                state = agent_state::PROCESS_MISSION;
+            }
+
+            printf("Updated pose\n");
 
             // Update the octree with the local cloud
             rrt.update_pose_and_octree(local_cloud, point, goal);
             start_point = point;
             
-            state = agent_state::EXEC_MISSION;
             is_safe = false;
             check_path.push_back(point);
             
@@ -367,7 +534,6 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
-
 
     /**
      * @brief 
@@ -400,6 +566,7 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             emergency_stop = true;
             am.clear();
             state = agent_state::IDLE;
+            init_last_pose = false;
             emergency_stop_time = system_clock::now();
             return;
         }

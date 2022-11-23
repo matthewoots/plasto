@@ -11,6 +11,7 @@ find_package(catkin
   COMPONENTS
     roscpp
     common_msgs
+    mavros_msgs
     pcl_ros
 )
 
@@ -21,6 +22,7 @@ catkin_package(
   CATKIN_DEPENDS  
     roscpp 
     common_msgs
+    mavros_msgs
     pcl_ros
 
   DEPENDS

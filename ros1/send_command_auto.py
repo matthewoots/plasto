@@ -44,11 +44,11 @@ def normalize_angle_positive(angle):
 class auto_publisher:
     def __init__(self):
         self.pose = Point()
-        self.target = Point()
+        self.target = PoseStamped()
         self.init = False
         self.counter = 0
-        self.pub = rospy.Publisher('/goal', Point, queue_size=20, latch=True)
-        self.sub = rospy.Subscriber("/pose", PoseStamped, self.callback, queue_size=20)
+        self.pub = rospy.Publisher('/plasto_node/goal', PoseStamped, queue_size=20, latch=True)
+        self.sub = rospy.Subscriber("/plasto_node/pose", PoseStamped, self.callback, queue_size=20)
         epoch = rospy.Time.now()
         while self.pub.get_num_connections() < 1:
             # Do nothing
@@ -69,21 +69,24 @@ class auto_publisher:
                 math.pow(self.pose.x, 2) + \
                 math.pow(self.pose.y, 2))
             
-            self.target.x = h * math.cos(next_bearing)
-            self.target.y = h * math.sin(next_bearing)
-            self.target.z = self.pose.z
+            self.target.pose.position.x = h * math.cos(next_bearing)
+            self.target.pose.position.y = h * math.sin(next_bearing)
+            self.target.pose.position.z = self.pose.z
             self.pub.publish(self.target)
             print("[" + str(self.counter) + "] publish new point")
             self.init = True
             return
         
-        distance = math.sqrt(math.pow(self.target.x - self.pose.x, 2) + \
-        math.pow(self.target.y - self.pose.y, 2) + \
-        math.pow(self.target.z - self.pose.z, 2))
+        distance = math.sqrt( \
+        math.pow(self.target.pose.position.x - self.pose.x, 2) + \
+        math.pow(self.target.pose.position.y - self.pose.y, 2) + \
+        math.pow(self.target.pose.position.z - self.pose.z, 2))
 
-        if (distance < 0.2):
+        # if (distance < 0.2):
+        if (distance < 2.0):
             self.init = False
-            time.sleep(2)
+            # time.sleep(2)
+            time.sleep(0.1)
             return
         
 

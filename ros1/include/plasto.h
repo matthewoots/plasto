@@ -46,6 +46,8 @@
 
 #include <visualization_msgs/Marker.h>
 
+#include <mavros_msgs/PositionTarget.h>
+
 #define KNRM  "\033[0m"
 #define KRED  "\033[31m"
 #define KGRN  "\033[32m"
@@ -131,13 +133,15 @@ class plasto_node
         ros::NodeHandle _nh;
 
         ros::Subscriber pcl2_msg_sub, command_sub, pose_sub;
-        ros::Publisher local_pcl_pub, g_rrt_points_pub;
+        ros::Publisher local_pcl_pub, g_rrt_points_pub, command_pub;
         ros::Publisher pose_pub, debug_pcl_pub, debug_pub, safe_corridor_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
 
         Eigen::Vector3d goal;
+        Eigen::Vector3d last_goal_pos;
         pose current_pose;
+        Eigen::Vector3d pos, vel, acc;
 
         std::vector<Eigen::Vector3d> global_setpoints;
 
@@ -151,25 +155,29 @@ class plasto_node
             have_global_cloud = false,
             sample_tree = false,
             is_enu = false,
-            get_first_pose = false;
+            get_first_pose = false,
+            init_last_pose = false;
         orientation orientation;
 
+        std::vector<octree_map::sliding_map::triangles> sfc_polygon;
+
         double safety_horizon, reached_threshold, distance_threshold;
+        double last_yaw;
 
         bool init_cloud = false, emergency_stop = false;
 
         t_p_sc emergency_stop_time;
 
         /** @brief Callbacks, mainly for loading pcl and commands **/
-        void command_callback(const geometry_msgs::PointConstPtr& msg);
+        void command_callback(const geometry_msgs::PoseStampedConstPtr& msg);
         void pcl2_callback(const sensor_msgs::PointCloud2ConstPtr& msg);
         void pose_callback(const geometry_msgs::PoseStampedConstPtr& msg);
 
 
         /** @brief Timers for searching and agent movement **/
-        ros::Timer planning_timer, agent_timer, map_timer;
+        ros::Timer planning_timer, command_timer, map_timer;
         void plasto_timer(const ros::TimerEvent &);
-        void agent_forward_timer(const ros::TimerEvent &);
+        void agent_command_timer(const ros::TimerEvent &);
         void local_map_timer(const ros::TimerEvent &);
 
         void calc_uav_orientation(
@@ -263,8 +271,8 @@ class plasto_node
             _nh.param<double>("safety/reached_threshold", reached_threshold, -1.0);
 
             pcl2_msg_sub = _nh.subscribe<sensor_msgs::PointCloud2>(
-                "mock_map", 1,  boost::bind(&plasto_node::pcl2_callback, this, _1));
-            command_sub = _nh.subscribe<geometry_msgs::Point>(
+                "map", 1,  boost::bind(&plasto_node::pcl2_callback, this, _1));
+            command_sub = _nh.subscribe<geometry_msgs::PoseStamped>(
                 "goal", 1,  boost::bind(&plasto_node::command_callback, this, _1));
             pose_sub = _nh.subscribe<geometry_msgs::PoseStamped>(
                 "pose", 1,  boost::bind(&plasto_node::pose_callback, this, _1));
@@ -278,17 +286,22 @@ class plasto_node
                 <visualization_msgs::Marker>("debug_points", 10);
             safe_corridor_pub = _nh.advertise
                 <visualization_msgs::Marker>("safe_corridor", 10);
+            command_pub = _nh.advertise
+                <mavros_msgs::PositionTarget>("command", 10);
 
             /** @brief Timer for the rrt search and agent */
 		    planning_timer = _nh.createTimer(
                 ros::Duration(rrt_param.s_i), 
                 &plasto_node::plasto_timer, this, false, false);
-            agent_timer = _nh.createTimer(
-                ros::Duration(1/simulation_hz), 
-                &plasto_node::agent_forward_timer, this, false, false);
+            command_timer = _nh.createTimer(
+                ros::Duration(
+                simulation ? 1/simulation_hz : (rrt_param.s_i / 3)), 
+                &plasto_node::agent_command_timer, this, false, false);
             map_timer = _nh.createTimer(
                 ros::Duration(1/map_hz), 
                 &plasto_node::local_map_timer, this, false, false);
+
+            rrt.set_no_fly_zone(no_fly_zone);
 
             /** @brief Choose a color for the trajectory using random values **/
             std::random_device dev;
@@ -313,6 +326,8 @@ class plasto_node
                 double h = map_size / 2.0 * 1.5; // multiply with an expansion
                 current_pose.pos = Eigen::Vector3d(h * cos(rand_angle), 
                     h * sin(rand_angle), dis_height(generator));
+            
+                last_goal_pos = current_pose.pos;
             }
             
             local_cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(
@@ -327,10 +342,8 @@ class plasto_node
                 map_timer.start();
 
             state = agent_state::IDLE;
-
-            if (simulation)
-                agent_timer.start();
-            
+                
+            command_timer.start();
             planning_timer.start();
         }
 
@@ -341,7 +354,7 @@ class plasto_node
             local_cloud->points.clear();
 
             // Stop all the timers
-            agent_timer.stop();
+            command_timer.stop();
             planning_timer.stop();
             map_timer.stop();
         }
@@ -358,6 +371,129 @@ class plasto_node
             pcl::fromPCLPointCloud2(pcl_pc2, *tmp_cloud);
             
             return tmp_cloud;
+        }
+
+        /** 
+         * @brief similar to the ROS euler rpy which does not require the tf library, 
+         * hence independent of ROS but yield the same rotation 
+        **/
+        Eigen::Vector3d euler_rpy(Eigen::Matrix3d R)
+        {
+            Eigen::Vector3d euler_out;
+            // Each vector is a row of the matrix
+            Eigen::Vector3d m_el[3];
+            m_el[0] = Vector3d(R(0,0), R(0,1), R(0,2));
+            m_el[1] = Vector3d(R(1,0), R(1,1), R(1,2));
+            m_el[2] = Vector3d(R(2,0), R(2,1), R(2,2));
+
+            // Check that pitch is not at a singularity
+            if (abs(m_el[2].x()) >= 1)
+            {
+                euler_out.z() = 0;
+
+                // From difference of angles formula
+                double delta = atan2(m_el[2].y(),m_el[2].z());
+                if (m_el[2].x() < 0)  //gimbal locked down
+                {
+                    euler_out.y() = M_PI / 2.0;
+                    euler_out.x() = delta;
+                }
+                else // gimbal locked up
+                {
+                    euler_out.y() = -M_PI / 2.0;
+                    euler_out.x() = delta;
+                }
+            }
+            else
+            {
+                euler_out.y() = - asin(m_el[2].x());
+
+                euler_out.x() = atan2(m_el[2].y()/cos(euler_out.y()), 
+                    m_el[2].z()/cos(euler_out.y()));
+
+                euler_out.z() = atan2(m_el[1].x()/cos(euler_out.y()), 
+                    m_el[0].x()/cos(euler_out.y()));
+            }
+
+            return euler_out;
+        }
+
+        // https://www.scratchapixel.com/lessons/3d-basic-rendering/ray-tracing-rendering-a-triangle/ray-triangle-intersection-geometric-solution
+        bool rayTriangleIntersect( 
+            const Eigen::Vector3d &orig, 
+            const Eigen::Vector3d &end, 
+            const Eigen::Vector3d &v0, 
+            const Eigen::Vector3d &v1, 
+            const Eigen::Vector3d &v2, 
+            double &t, Eigen::Vector3d &P) 
+        { 
+            Eigen::Vector3d dir = (end - orig).normalized();
+            double dist = (end - orig).norm();
+
+            double kEpsilon = 0.0001;
+            // compute plane's normal
+            Eigen::Vector3d v0v1 = v1 - v0; 
+            Eigen::Vector3d v0v2 = v2 - v0; 
+            // no need to normalize
+            Eigen::Vector3d N = v0v1.cross(v0v2);  //N 
+            double area2 = N.norm(); 
+        
+            // Step 1: finding P
+        
+            // check if ray and plane are parallel.
+            double NdotRayDirection = 
+                N.x() * dir.x() + 
+                N.y() * dir.y() +
+                N.z() * dir.z(); 
+            if (abs(NdotRayDirection) < kEpsilon)  //almost 0 
+                return false;  //they are parallel so they don't intersect ! 
+        
+            // compute d parameter using equation 2
+            float d = 
+                -(N.x() * v0.x() + 
+                N.y() * v0.y() +
+                N.z() * v0.z()); 
+        
+            // compute t (equation 3)
+            t = -((N.x() * orig.x() + 
+                N.y() * orig.y() +
+                N.z() * orig.z()) + d) / NdotRayDirection; 
+        
+            // check if the triangle is in behind the ray
+            if (t < 0) return false;  //the triangle is behind 
+            if (t > dist) return false;  //the triangle is infront of the line 
+        
+            // compute the intersection point using equation 1
+            P = orig + t * dir; 
+        
+            // Step 2: inside-outside test
+            Eigen::Vector3d C;  //vector perpendicular to triangle's plane 
+        
+            // edge 0
+            Eigen::Vector3d edge0 = v1 - v0; 
+            Eigen::Vector3d vp0 = P - v0; 
+            C = edge0.cross(vp0); 
+            if ((N.x() * C.x() + 
+                N.y() * C.y() +
+                N.z() * C.z()) < 0) return false;  //P is on the right side 
+        
+            // edge 1
+            Eigen::Vector3d edge1 = v2 - v1; 
+            Eigen::Vector3d vp1 = P - v1; 
+            C = edge1.cross(vp1); 
+            if ((N.x() * C.x() + 
+                N.y() * C.y() +
+                N.z() * C.z()) < 0)  return false;  //P is on the right side 
+        
+            // edge 2
+            Eigen::Vector3d edge2 = v0 - v2; 
+            Eigen::Vector3d vp2 = P - v2; 
+            C = edge2.cross(vp2); 
+            if ((N.x() * C.x() + 
+                N.y() * C.y() +
+                N.z() * C.z()) < 0) return false;  //P is on the right side; 
+        
+            return true;  //this ray hits the triangle 
         }
 
 };
