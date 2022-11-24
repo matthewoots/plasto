@@ -45,6 +45,7 @@ add_subdirectory(../lib_octree_local_map lib_olm)
 
 add_executable(${PROJECT_NAME}_node 
     src/corridor_gen.cpp
+    src/callbacks.cpp
     src/main.cpp
     src/plasto.cpp
     src/helper.cpp

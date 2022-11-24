@@ -1,15 +1,22 @@
 #include <corridor_gen.h>
 
 using namespace CorridorGen;
-CorridorGenerator::CorridorGenerator(double resolution, double clearance, int max_sample, double ceiling, double floor, double goal_pt_margin, std::vector<Eigen::Vector4d> _n_f_z)
-    : resolution_(resolution), clearance_(clearance), max_sample_(max_sample), ceiling_(ceiling), floor_(floor), goal_pt_margin_(goal_pt_margin)
+CorridorGenerator::CorridorGenerator(
+    double resolution, double clearance, int max_sample, 
+    double ceiling, double floor, double goal_pt_margin,
+    bool is_sparse,
+    std::vector<Eigen::Vector4d> no_flight_zone)
+    : resolution_(resolution), clearance_(clearance), 
+    max_sample_(max_sample), ceiling_(ceiling), 
+    floor_(floor), goal_pt_margin_(goal_pt_margin),
+    is_sparse_(is_sparse),
+    no_flight_zone_(no_flight_zone)
 {
     octree_.deleteTree();
     octree_.setResolution(resolution_);
     std::random_device rd;
     gen_ = std::mt19937_64(rd());
     one_third_ = 1.0 / 3.0;
-    n_f_z = _n_f_z;
     // normal_rand_ = std::normal_distribution<double>(0.0, 1.0);
     // normal_rand_(gen_);
     closeness_threshold_ = 0.5;
@@ -266,13 +273,24 @@ Eigen::Vector3d CorridorGenerator::getGuidePoint(std::vector<Eigen::Vector3d> &g
         // std::cout << "popped " << std::endl;
     }
 
+    Eigen::Vector3d out;
+    if (is_sparse_)
+    {
+        Eigen::Vector3d sample_direction = 
+            (guide_path.back() - center).normalized();
+        out = 
+            sample_direction * radius + center;
+    }
+    else
+        out = guide_path.back();
+
     // std::cout << "after popping " << std::endl;
 
     // for (auto point : guide_path)
     // {
     //     std::cout << "point " << point.transpose() << std::endl;
     // }
-    return guide_path.back();
+    return out;
 }
 
 bool CorridorGenerator::pointInCorridor(const Eigen::Vector3d &point, const Corridor &corridor)
@@ -635,11 +653,11 @@ Corridor CorridorGenerator::uniformBatchSample(const Eigen::Vector3d &guide_poin
             candidate_pt = rotation_matrix * candidate_pt + sample_origin;
             candidate_pt.z() = sample_origin.z();
 
-            for (int i = 0; i < (int)n_f_z.size(); i++)
+            for (int i = 0; i < (int)no_flight_zone_.size(); i++)
             {
                 // x_min, x_max, y_min, y_max in original frame
-                double x_min = n_f_z[i][0], x_max = n_f_z[i][1];
-                double y_min = n_f_z[i][2], y_max = n_f_z[i][3];
+                double x_min = no_flight_zone_[i][0], x_max = no_flight_zone_[i][1];
+                double y_min = no_flight_zone_[i][2], y_max = no_flight_zone_[i][3];
                 
                 // Reject point if it is in no fly zone
                 if (candidate_pt.x() <= x_max && candidate_pt.x() >= x_min &&
