@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.0.2)
 project(plasto)
 
 # Set target C++ standard and required compiler features
-set(CMAKE_CXX_STANDARD 14)
+# set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wno-deprecated-declarations")
 
@@ -43,6 +44,7 @@ add_subdirectory(../lib_lro_rrt lro_rrt)
 add_subdirectory(../lib_octree_local_map lib_olm)
 
 add_executable(${PROJECT_NAME}_node 
+    src/corridor_gen.cpp
     src/main.cpp
     src/plasto.cpp
     src/helper.cpp

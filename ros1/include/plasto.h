@@ -45,8 +45,11 @@
 #include <sensor_msgs/point_cloud_conversion.h>
 
 #include <visualization_msgs/Marker.h>
+#include <visualization_msgs/MarkerArray.h>
 
 #include <mavros_msgs/PositionTarget.h>
+
+#include <corridor_gen.h>
 
 #define KNRM  "\033[0m"
 #define KRED  "\033[31m"
@@ -62,6 +65,7 @@ using namespace std;
 using namespace std::chrono; // nanoseconds, system_clock, seconds
 using namespace lro_rrt_server;
 using namespace octree_map;
+using CorridorGen::Corridor;
 
 typedef time_point<std::chrono::system_clock> t_p_sc; // giving a typename
 
@@ -129,12 +133,18 @@ class plasto_node
         std::vector<am_trajectory> am;
 
         std::mutex pose_update_mutex;
+        std::mutex goal_update_mutex;
+        std::mutex local_map_mutex;
+        std::mutex am_mutex;
+        std::mutex global_setpoints_mutex;
+        std::mutex state_mutex;
 
         ros::NodeHandle _nh;
 
         ros::Subscriber pcl2_msg_sub, command_sub, pose_sub;
         ros::Publisher local_pcl_pub, g_rrt_points_pub, command_pub;
-        ros::Publisher pose_pub, debug_pcl_pub, debug_pub, safe_corridor_pub;
+        ros::Publisher pose_pub, debug_pcl_pub, debug_pub, 
+            safe_corridor_pub, sfc_pub, am_points_pub;
         
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud, local_cloud; 
 
@@ -197,6 +207,11 @@ class plasto_node
         visualization_msgs::Marker 
             visualize_triangle_list(Eigen::Vector4d color,
             std::vector<octree_map::sliding_map::triangles> tri);
+        
+        visualization_msgs::MarkerArray 
+            visualize_corridor(
+            std::vector<Corridor> &corridors, 
+            Eigen::Vector4d color);
 
         int error_counter;
 
@@ -281,6 +296,7 @@ class plasto_node
             local_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("local_map", 10);
             pose_pub = _nh.advertise<geometry_msgs::PoseStamped>("pose", 10);
             g_rrt_points_pub = _nh.advertise<nav_msgs::Path>("rrt_points_global", 10);
+            am_points_pub = _nh.advertise<nav_msgs::Path>("am_global", 10);
             debug_pcl_pub = _nh.advertise<sensor_msgs::PointCloud2>("debug_map", 10);
             debug_pub = _nh.advertise
                 <visualization_msgs::Marker>("debug_points", 10);
@@ -288,6 +304,8 @@ class plasto_node
                 <visualization_msgs::Marker>("safe_corridor", 10);
             command_pub = _nh.advertise
                 <mavros_msgs::PositionTarget>("command", 10);
+            sfc_pub = _nh.advertise
+                <visualization_msgs::MarkerArray>("sfc", 1);
 
             /** @brief Timer for the rrt search and agent */
 		    planning_timer = _nh.createTimer(

@@ -35,8 +35,6 @@ using namespace lro_rrt_server;
 void plasto_node::pose_callback(
     const geometry_msgs::PoseStampedConstPtr& msg)
 {
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
-
     Eigen::Affine3d transform;
 
     // local position in frame
@@ -60,6 +58,8 @@ void plasto_node::pose_callback(
             Quaterniond(0.7073883, 0, 0, 0.7068252).inverse());
     }
 
+    pose_update_mutex.lock();
+
     current_pose.pos = transform.translation();
     current_pose.rot.q = transform.linear();
     current_pose.rot.e.z() = 
@@ -72,6 +72,8 @@ void plasto_node::pose_callback(
     }
 
     get_first_pose = true;
+
+    pose_update_mutex.unlock();
 }
 
 void plasto_node::pcl2_callback(
@@ -80,6 +82,10 @@ void plasto_node::pcl2_callback(
     // Callback once and save the pointcloud
 
     // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+
+    pose_update_mutex.lock();
+    pose pose_copy = current_pose;
+    pose_update_mutex.unlock();
 
     // We have a global cloud received here
     if (!init_cloud && have_global_cloud)
@@ -97,8 +103,14 @@ void plasto_node::pcl2_callback(
     {
         init_cloud = true;
         full_cloud = pcl2_converter(*msg);
+
+        local_map_mutex.lock();
+        
         local_cloud = sm.get_sliding_map_from_sensor(
-            full_cloud, current_pose.pos, current_pose.rot.q);
+            full_cloud, pose_copy.pos, pose_copy.rot.q);
+        
+        local_map_mutex.unlock();
+
         sensor_msgs::PointCloud2 obstacle_msg;
         // Publish local cloud as a ros message
         pcl::toROSMsg(*local_cloud, obstacle_msg);
@@ -114,9 +126,15 @@ void plasto_node::pcl2_callback(
 void plasto_node::command_callback(
     const geometry_msgs::PoseStampedConstPtr& msg)
 {
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     geometry_msgs::PoseStamped pos = *msg;
+
+    pose_update_mutex.lock();
+    pose pose_copy = current_pose;
+    pose_update_mutex.unlock();
+
+    goal_update_mutex.lock();
 
     goal = Eigen::Vector3d(
         pos.pose.position.x, 
@@ -124,14 +142,27 @@ void plasto_node::command_callback(
         pos.pose.position.z
     );
 
+    goal_update_mutex.unlock();
+
     if (!rrt.initialized())
         rrt.set_parameters(rrt_param);
 
+    state_mutex.lock();
+    
     if (state == agent_state::IDLE)
         state = agent_state::PROCESS_MISSION;
+    // else if (state == agent_state::EXEC_MISSION)
+    //     state = agent_state::SWITCH_MISSION;
     else if (state == agent_state::EXEC_MISSION)
-        state = agent_state::SWITCH_MISSION;
+    {
+        am.clear();
+        state = agent_state::PROCESS_MISSION;
+        last_goal_pos = pose_copy.pos;
+        is_safe = false;
+    }
     
+    state_mutex.unlock();
+
     // Every time a command is executed, 
     // save the current state (using the callback) as fallback
     init_last_pose = false;
@@ -151,10 +182,18 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
 
     // t_p_sc mapper_start = system_clock::now();
 
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    pose_update_mutex.lock();
+    pose pose_copy = current_pose;
+    pose_update_mutex.unlock();
+
+    local_map_mutex.lock();
+
     local_cloud = 
         sm.get_sliding_map_from_global(
-        current_pose.pos, current_pose.rot.q);
+        pose_copy.pos, pose_copy.rot.q);
+
+    local_map_mutex.unlock();
 
     sensor_msgs::PointCloud2 obstacle_msg, detailed_map_msg;
     // Publish local cloud as a ros message
@@ -172,36 +211,47 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
 
 void plasto_node::agent_command_timer(const ros::TimerEvent &)
 {
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+
+    pose_update_mutex.lock();
+    pose pose_copy = current_pose;
+    pose_update_mutex.unlock();
 
     double yaw;
 
     if (emergency_stop)
     {
+        last_goal_pos = pose_copy.pos;
         double t = duration<double>(system_clock::now() - emergency_stop_time).count();
         if (t > 0.25)
         {
+            state_mutex.lock();
+
             emergency_stop = false;
             state = agent_state::PROCESS_MISSION;
-            last_goal_pos = current_pose.pos;
             init_last_pose = true;
+            
+            state_mutex.unlock();
             return;
         }
     }
+
+    am_mutex.lock();
 
     bool stop = false;
     if (!am.empty())
     {
         stop = 
             abs(duration<double>(system_clock::now() - 
-            am.back().s_e_t.second).count()) < rrt_param.s_i*1.2;
+            am.back().s_e_t.second).count()) < rrt_param.s_i*1.0;
         // printf("size %d, %lf\n", (int)am.size(),
         //     duration<double>(system_clock::now() - 
         //     am.back().s_e_t.second).count());
     }
 
     // If the agent has reached its goal
-    if ((goal - current_pose.pos).norm() < 0.10 || stop)
+    if ((state != agent_state::IDLE && 
+        (goal - pose_copy.pos).norm() < 0.10) || stop)
     {
         am.clear();
         state = agent_state::IDLE;
@@ -210,14 +260,24 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
         printf("trajectory completed\n");
     }
 
+    am_mutex.unlock();
+
+    state_mutex.lock();
+
     if (state == agent_state::EXEC_MISSION || 
         state == agent_state::SWITCH_MISSION)
     {
         // Choose the path within the vector of trajectories
         t_p_sc current_time = system_clock::now();
         
+        am_mutex.lock();
+
         if (am.empty())
+        {
+            state_mutex.unlock();
+            am_mutex.unlock();
             return;
+        }
 
         am_trajectory am_segment;
         for (am_trajectory &current_am : am)
@@ -229,19 +289,22 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
 
         double t = duration<double>(current_time - am_segment.s_e_t.first).count();
         pos = am_segment.traj.getPos(t);
-
         
         // If the agent has not reached its goal
         vel = am_segment.traj.getVel(t);
         acc = am_segment.traj.getAcc(t);
+        
+        am_mutex.unlock();
 
         double dist = -FLT_MAX;
         Eigen::Vector3d intersection_point;
         bool intersect_found = false;
         double offset = 0.0;
 
+        global_setpoints_mutex.lock();
+
         if (!sfc_polygon.empty() && 
-            (goal - current_pose.pos).norm() > 1.00)
+            (goal - pose_copy.pos).norm() > 0.75)
             for (int i = 0; i < global_setpoints.size()-1; i++)
             {
                 if (i > 0)
@@ -273,10 +336,12 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
                 }
             }
         
+        global_setpoints_mutex.unlock();
+        
         if (intersect_found)
         {
             Eigen::Vector3d yaw_direction = 
-                (intersection_point - current_pose.pos).normalized();
+                (intersection_point - pose_copy.pos).normalized();
             yaw = atan2(yaw_direction.y(), yaw_direction.x());
             last_yaw = yaw;
             // printf("intersect yaw %lf\n", yaw);
@@ -291,11 +356,15 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
     else
     {
         pos = last_goal_pos;
-        yaw = current_pose.rot.e.z();
+        yaw = pose_copy.rot.e.z();
     }
+
+    state_mutex.unlock();
     
     if (simulation)
     {
+        pose_update_mutex.lock();
+
         current_pose.pos = pos;
         current_pose.rot.e.z() = yaw;
         
@@ -317,6 +386,8 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
 
         last_goal_pos = pos;
         get_first_pose = true;
+
+        pose_update_mutex.unlock();
     }
     // Not in a simulation
     else if (!simulation)
@@ -343,13 +414,22 @@ void plasto_node::agent_command_timer(const ros::TimerEvent &)
 
 void plasto_node::plasto_timer(const ros::TimerEvent &)
 {
-    std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
+    // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
     if (state == agent_state::IDLE)
         return;
 
     if (!init_last_pose)
         return;
+
+    pose_update_mutex.lock();
+    goal_update_mutex.lock();
+
+    pose pose_copy = current_pose;
+    Eigen::Vector3d goal_copy = goal;
+
+    goal_update_mutex.unlock();
+    pose_update_mutex.unlock();
 
     t_p_sc planner_start = system_clock::now();
 
@@ -381,6 +461,7 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
         a_m_p.w_t, a_m_p.w_a, a_m_p.w_j, 
         a_m_p.m_v, a_m_p.m_a, a_m_p.m_i, a_m_p.e);
 
+    am_mutex.lock();
     // Discard any unused previous trajectories in the vector
     if (!am.empty())
     {
@@ -393,6 +474,7 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
                 break;
         }
     }
+    am_mutex.unlock();
 
     Eigen::Vector3d start_point;
     std::vector<Eigen::Vector3d> check_path, global_search_path;
@@ -405,14 +487,22 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
      * to use as start
      */
 
+    state_mutex.lock();
+
     switch (state)
     {
         case (agent_state::PROCESS_MISSION):
         {
+            local_map_mutex.lock();
+
             // Update the octree with the local cloud
-            rrt.update_pose_and_octree(local_cloud, current_pose.pos, goal);
-            start_point = current_pose.pos;
-            check_path.push_back(current_pose.pos);
+            rrt.update_pose_and_octree(
+                local_cloud, pose_copy.pos, goal_copy);
+
+            local_map_mutex.unlock();
+
+            start_point = pose_copy.pos;
+            check_path.push_back(pose_copy.pos);
             break;
         }
         case (agent_state::EXEC_MISSION):
@@ -427,7 +517,10 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
             if (t1 > duration<double>(
                 am[idx].s_e_t.second - am[idx].s_e_t.first).count())
+            {
+                state_mutex.unlock();
                 return;
+            }
             // double time = duration<double>(
             //     horizon_time - am[idx].s_e_t.second).count();
             // printf("size of am %d\n", (int)am.size());    
@@ -436,8 +529,14 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
 
             point = am[idx].traj.getPos(t1);
 
+            local_map_mutex.lock();
+
             // Update the octree with the local cloud
-            rrt.update_pose_and_octree(local_cloud, point, goal);
+            rrt.update_pose_and_octree(
+                local_cloud, point, goal_copy);
+            
+            local_map_mutex.unlock();
+
             start_point = point;
 
             // Find the possible trajectory segment it is at
@@ -471,6 +570,7 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
         }
         case (agent_state::SWITCH_MISSION):
         {
+            am_mutex.lock();
             Eigen::Vector3d point;
             printf("empty am %s\n", am.empty() ? "yes" : "no");
 
@@ -508,19 +608,29 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
                 }
                 
                 point = am[idx].traj.getPos(t1);
+
                 state = agent_state::EXEC_MISSION;
+                
             }
             else
             {
                 am.clear();
-                point = current_pose.pos;
+                point = pose_copy.pos;
                 state = agent_state::PROCESS_MISSION;
             }
 
             printf("Updated pose\n");
 
+            am_mutex.unlock();
+
+            local_map_mutex.lock();
+
             // Update the octree with the local cloud
-            rrt.update_pose_and_octree(local_cloud, point, goal);
+            rrt.update_pose_and_octree(
+                local_cloud, point, goal_copy);
+
+            local_map_mutex.unlock();
+
             start_point = point;
             
             is_safe = false;
@@ -529,8 +639,13 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             break;
         }
         default:
+        {
+            state_mutex.unlock();
             return;
+        }
     }
+
+    state_mutex.unlock();
 
     double update_octree_time = duration<double>(system_clock::now() - 
         timer).count()*1000;
@@ -541,11 +656,13 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
      * out new rrt search
      */
 
+    global_setpoints_mutex.lock();
+
     double update_check_time;
     // Check to see whether the previous data extents to the end
     // if previous point last point connects to end point, do bypass    
     if ((rrt.get_path_validity(check_path) && is_safe) || 
-        (goal - start_point).norm() < 0.1)
+        (goal_copy - start_point).norm() < 0.1)
     {        
         // std::cout << KCYN << "Conducting bypass" << KNRM << std::endl;
         update_check_time = duration<double>(system_clock::now() - 
@@ -561,6 +678,8 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
 
         if (global_setpoints.empty())
         {
+            am_mutex.lock();
+
             std::cout << KRED << "Collision detected, emergency stop" << 
                 KNRM << std::endl;
             emergency_stop = true;
@@ -568,6 +687,9 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             state = agent_state::IDLE;
             init_last_pose = false;
             emergency_stop_time = system_clock::now();
+            
+            am_mutex.unlock();
+            global_setpoints_mutex.unlock();
             return;
         }
 
@@ -591,17 +713,64 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
                 rrt.edges,color_range[0], 0.2, 1, 0.5);
             debug_pub.publish(edges);
         }
+
+        std::shared_ptr<CorridorGen::CorridorGenerator> 
+            corridor_generator = 
+            std::make_shared<CorridorGen::CorridorGenerator>(
+            rrt_param.r, rrt_param.r*2, 50, 
+            rrt_param.h_c.second, rrt_param.h_c.first, 
+            rrt_param.r*2, no_fly_zone);
+    
+        local_map_mutex.lock();
+
+        corridor_generator->updatePointCloud(local_cloud);
+        std::vector<Corridor> corridor_list;
+
+        std::vector<Eigen::Vector3d> discrete_path;
+        lro_rrt_server::get_discretized_path(
+            global_setpoints, discrete_path);
+
+        corridor_generator->generateCorridorAlongPath(discrete_path);
+        corridor_list = corridor_generator->getCorridor();
+        visualization_msgs::MarkerArray corridor_msg =
+            visualize_corridor(corridor_list, color_range[1]);
+
+        sfc_pub.publish(corridor_msg);
+
+        local_map_mutex.unlock();
+
+        global_search_path = corridor_generator->getWaypointList();
+
+        if (global_search_path.empty() || 
+            global_search_path.size() < 2)
+        {
+            am_mutex.lock();
+
+            std::cout << KRED << "global_search_path empty, emergency stop" << 
+                KNRM << std::endl;
+            emergency_stop = true;
+            am.clear();
+            state = agent_state::IDLE;
+            init_last_pose = false;
+            emergency_stop_time = system_clock::now();
+
+            am_mutex.unlock();
+            global_setpoints_mutex.unlock();
+            return;
+        }
+
+        nav_msgs::Path global_path = 
+            vector_3d_to_path(global_search_path);
+        g_rrt_points_pub.publish(global_path);
     }
 
     // rrt.get_receding_path(
     //     start_point, m_p.s_r * 2, global_search_path);
 
-    lro_rrt_server::get_discretized_path(
-        global_setpoints, global_search_path);
-
-    nav_msgs::Path global_path = 
-        vector_3d_to_path(global_search_path);
-    g_rrt_points_pub.publish(global_path);
+    // lro_rrt_server::get_discretized_path(
+    //     global_setpoints, global_search_path);
+    
+    global_setpoints_mutex.unlock();
 
     double rrt_time = 
         duration<double>(system_clock::now() - 
@@ -622,6 +791,9 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
      * concatenation of the AM trajectory
      */
 
+    am_mutex.lock();
+    state_mutex.lock();
+
     // Update if we are processing the mission
     if (!bypass && state == agent_state::PROCESS_MISSION)
     {
@@ -638,10 +810,38 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
 
         am.push_back(tmp_am);
 
+        std::vector<Eigen::Vector3d> display_am;
+        for (int i = 0; i < (int)am.size(); i++)
+        {
+            double total_duration = 
+                duration<double>(am[i].s_e_t.second - 
+                am[i].s_e_t.first).count();
+            
+            double split = ceil(total_duration / 0.1); 
+            double interval = total_duration / split;
+            printf("interval %lfl\n",interval);
+            double accumulated = 0.0;
+            for (int k = 0; k < (int)split; k++)
+            {
+                if (accumulated > total_duration)
+                    continue;
+                display_am.push_back(
+                    am[i].traj.getPos(accumulated));
+                accumulated += interval;
+            }
+
+        }
+        
+        nav_msgs::Path display_am_path = 
+            vector_3d_to_path(display_am);
+        am_points_pub.publish(display_am_path);
+
         state = agent_state::EXEC_MISSION;
     }
     // Only update if we have done a new RRT search
-    else if (!bypass && state == agent_state::EXEC_MISSION)
+    else if (!bypass && 
+        state == agent_state::EXEC_MISSION || 
+        state == agent_state::SWITCH_MISSION)
     // else if (state == agent_state::EXEC_MISSION)
     {
         // Since we have a new path, the previous trajectory has to shorten its end time
@@ -660,7 +860,36 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             tmp_am.traj.getTotalDuration()*1000));
     
         am.push_back(tmp_am);
+
+        std::vector<Eigen::Vector3d> display_am;
+        for (int i = 0; i < (int)am.size(); i++)
+        {
+            double total_duration = 
+                duration<double>(am[i].s_e_t.second - 
+                am[i].s_e_t.first).count();
+            
+            double split = ceil(total_duration / 0.1); 
+            double interval = total_duration / split;
+            printf("interval %lfl\n",interval);
+            double accumulated = 0.0;
+            for (int k = 0; k < (int)split; k++)
+            {
+                if (accumulated > total_duration)
+                    continue;
+                display_am.push_back(
+                    am[i].traj.getPos(accumulated));
+                accumulated += interval;
+            }
+
+        }
+        
+        nav_msgs::Path display_am_path = 
+            vector_3d_to_path(display_am);
+        am_points_pub.publish(display_am_path);
     }
+
+    state_mutex.unlock();
+    am_mutex.unlock();
 
     double am_time = 
         duration<double>(system_clock::now() - 

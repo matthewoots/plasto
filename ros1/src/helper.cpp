@@ -81,6 +81,45 @@ visualization_msgs::Marker
     return points;
 }
 
+visualization_msgs::MarkerArray 
+    plasto_node::visualize_corridor(
+    std::vector<Corridor> &corridors, 
+    Eigen::Vector4d color)
+{
+    visualization_msgs::MarkerArray corridor_array;
+    int index = 0;
+    for (auto corridor : corridors)
+    {
+        auto [position, radius] = corridor;
+        visualization_msgs::Marker corridor_sphere;
+        corridor_sphere.header.frame_id = "world";
+        corridor_sphere.header.stamp = ros::Time::now();
+        corridor_sphere.id = index;
+        corridor_sphere.type = visualization_msgs::Marker::SPHERE;
+        corridor_sphere.action = visualization_msgs::Marker::ADD;
+        corridor_sphere.pose.position.x = position.x();
+        corridor_sphere.pose.position.y = position.y();
+        corridor_sphere.pose.position.z = position.z();
+        corridor_sphere.pose.orientation.x = 0.0;
+        corridor_sphere.pose.orientation.y = 0.0;
+        corridor_sphere.pose.orientation.z = 0.0;
+        corridor_sphere.pose.orientation.w = 1.0;
+        corridor_sphere.scale.x = radius * 2;
+        corridor_sphere.scale.y = radius * 2;
+        corridor_sphere.scale.z = radius * 2;
+        corridor_sphere.color.a = 0.4; // Don't forget to set the alpha!
+        corridor_sphere.color.r = color[0];
+        corridor_sphere.color.g = color[1];
+        corridor_sphere.color.b = color[2];
+
+        corridor_array.markers.emplace_back(corridor_sphere);
+
+        index++;
+    }
+
+    return corridor_array;
+}
+
 visualization_msgs::Marker 
     plasto_node::visualize_line_list(
     vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> vect_vert, 
