@@ -49,8 +49,7 @@
     <param name="map/size" value="$(arg map_size)"/>
     <param name="map/vfov" value="1.40"/>
     <param name="map/hfov" value="2.0944"/>
-    <param name="sliding_map/distance_threshold" value="3.0"/>
-
+    
     <param name="amtraj/weight/time_regularization" value="1024.0"/>
     <param name="amtraj/weight/acceleration" value="15.0"/> 
     <param name="amtraj/weight/jerk" value="1.0"/>

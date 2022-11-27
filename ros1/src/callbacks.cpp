@@ -60,14 +60,8 @@ void plasto_node::pose_callback(
     current_pose.rot.e.z() = 
         euler_rpy(transform.linear()).z();
 
-    if (!init_last_pose)
-    {
-        last_goal = current_pose.pos;
-        init_last_pose = true;
-    }
-
-    get_first_pose = true;
-
+    init_first_pose = true;
+    
     pose_update_mutex.unlock();
 }
 
@@ -78,9 +72,11 @@ void plasto_node::pointcloud_callback(
 
     // std::lock_guard<std::mutex> pose_lock(pose_update_mutex);
 
-    pose_update_mutex.lock();
-    pose pose_copy = current_pose;
-    pose_update_mutex.unlock();
+    pose pose_copy;
+    Eigen::Vector3d goal_copy;
+    
+    get_pose_goal_data(
+        goal_copy, pose_copy);
 
     // We have a global cloud received here
     if (!init_cloud && have_global_cloud)
@@ -91,7 +87,7 @@ void plasto_node::pointcloud_callback(
         sm.set_parameters(
             m_p.hfov, m_p.vfov, m_p.m_r, 
             m_p.s_r, m_p.s_m_s,
-            full_cloud, false, distance_threshold);
+            full_cloud, false);
     }
     // We have a local cloud received here
     else if (!have_global_cloud)
@@ -125,43 +121,42 @@ void plasto_node::command_callback(
 
     geometry_msgs::PoseStamped pos = *msg;
 
-    pose_update_mutex.lock();
-    pose pose_copy = current_pose;
-    pose_update_mutex.unlock();
-
+    state_mutex.lock();
+    last_safe_mutex.lock();
+    am_mutex.lock();
     goal_update_mutex.lock();
+    pose_update_mutex.lock();
+
+    pose pose_copy = current_pose;
 
     goal = Eigen::Vector3d(
         pos.pose.position.x, 
         pos.pose.position.y, 
         pos.pose.position.z
-    );
+    );   
 
-    goal_update_mutex.unlock();
+    bool not_at_end = false;
+    if (!am.empty())
+        not_at_end = (abs(duration<double>(system_clock::now() - 
+            am.back().s_e_t.second).count()) >= end_time_tol);
 
-    if (!rrt.initialized())
-        rrt.set_parameters(rrt_param);
-
-    state_mutex.lock();
-    
-    if (state == agent_state::IDLE)
-        state = agent_state::PROCESS_MISSION;
-    // else if (state == agent_state::EXEC_MISSION)
-    //     state = agent_state::SWITCH_MISSION;
-    else if (state == agent_state::EXEC_MISSION ||
-        state == agent_state::PROCESS_MISSION)
+    if (state == agent_state::EXEC_MISSION && not_at_end)
+        state = agent_state::EXEC_MISSION;
+    else
     {
-        am.clear();
+        am.empty();
+        last_safe_pos = pose_copy.pos;
+        last_safe_yaw = pose_copy.rot.e.z();
         state = agent_state::PROCESS_MISSION;
-        last_goal = pose_copy.pos;
-        is_safe = false;
     }
-    
-    state_mutex.unlock();
 
-    // Every time a command is executed, 
-    // save the current state (using the callback) as fallback
-    init_last_pose = false;
+    is_safe = false;
+
+    state_mutex.unlock();
+    last_safe_mutex.unlock();
+    am_mutex.unlock();
+    goal_update_mutex.unlock();
+    pose_update_mutex.unlock();
 
     printf("[plasto] received command\n");
 

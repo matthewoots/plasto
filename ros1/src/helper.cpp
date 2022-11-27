@@ -28,17 +28,17 @@
 #define KWHT  "\033[37m"
 
 nav_msgs::Path plasto_node::vector_3d_to_path(
-    vector<Vector3d> path_vector)
+    std::vector<Eigen::Vector3d> path_vector)
 {
     nav_msgs::Path path;
     path.header.stamp = ros::Time::now();
     path.header.frame_id = "world";
-    for (int i = 0; i < path_vector.size(); i++)
+    for (Eigen::Vector3d &path_single : path_vector)
     {
         geometry_msgs::PoseStamped pose;
-        pose.pose.position.x = path_vector[i][0];
-        pose.pose.position.y = path_vector[i][1];
-        pose.pose.position.z = path_vector[i][2];
+        pose.pose.position.x = path_single[0];
+        pose.pose.position.y = path_single[1];
+        pose.pose.position.z = path_single[2];
         path.poses.push_back(pose);
     }
 
@@ -159,53 +159,6 @@ visualization_msgs::Marker
     }
 
     return lines;
-}
-
-/**
- * @brief visualize_triangle_list
- * https://github.com/Dung-Han-Lee/Convexhull-3D-Implementation-of-incremental-convexhull-algorithm/blob/master/src/demo.cpp
- * @param tri 
- * @return visualization_msgs::Marker 
- */
-visualization_msgs::Marker 
-    plasto_node::visualize_triangle_list(Eigen::Vector4d color,
-    std::vector<octree_map::sliding_map::triangles> tri)
-{
-    visualization_msgs::Marker tri_marker;
-    tri_marker.action = visualization_msgs::Marker::ADD;
-    tri_marker.scale.x = tri_marker.scale.y = tri_marker.scale.z = 1.0;
-    tri_marker.pose.orientation.x = 0.0;
-    tri_marker.pose.orientation.y = 0.0;
-    tri_marker.pose.orientation.z = 0.0;
-    tri_marker.pose.orientation.w = 1.0;
-    tri_marker.pose.position.x = 0.0;
-    tri_marker.pose.position.y = 0.0;
-    tri_marker.pose.position.z = 0.0;
-    tri_marker.header.frame_id = "world";
-    tri_marker.header.stamp = ros::Time::now();
-    tri_marker.id = 0;
-    tri_marker.type = visualization_msgs::Marker::TRIANGLE_LIST;
-
-    tri_marker.color.r = color(0);
-    tri_marker.color.g = color(1);
-    tri_marker.color.b = color(2);
-
-    tri_marker.color.a = 0.05;
-
-    geometry_msgs::Point temp;
-    for (const auto& triangles : tri)
-        for (const auto& triangle_index : triangles.tri_idx) 
-        {
-            for(int i = 0; i < 3; i++)
-            {
-                temp.x = triangles.vert[triangle_index[i]].x(); 
-                temp.y = triangles.vert[triangle_index[i]].y(); 
-                temp.z = triangles.vert[triangle_index[i]].z(); 
-                tri_marker.points.push_back(temp);
-            }
-        }
-    
-    return tri_marker;
 }
 
 /** @brief Convert point cloud from ROS sensor message to pcl point ptr **/

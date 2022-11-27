@@ -159,7 +159,7 @@ namespace CorridorGen
         const std::vector<Eigen::Vector3d> getWaypointList() const;
         const std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> getSampleDirection() const;
         const std::vector<Eigen::Vector3d> getSamplePoint() const;
-        void generateCorridorAlongPath(const std::vector<Eigen::Vector3d> &path); // wip
+        bool generateCorridorAlongPath(const std::vector<Eigen::Vector3d> &path); // wip
 
     private: // private member function
         Eigen::Vector3d getGuidePoint(std::vector<Eigen::Vector3d> &guide_path, const Corridor &input_corridor);

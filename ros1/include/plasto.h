@@ -117,7 +117,6 @@ class plasto_node
         {
             IDLE,
             PROCESS_MISSION,
-            SWITCH_MISSION,
             EXEC_MISSION
         };
 
@@ -138,6 +137,7 @@ class plasto_node
         std::mutex am_mutex;
         std::mutex global_setpoints_mutex;
         std::mutex state_mutex;
+        std::mutex last_safe_mutex;
 
         ros::NodeHandle _nh;
 
@@ -159,10 +159,7 @@ class plasto_node
         pcl::PointCloud<pcl::PointXYZ>::Ptr full_cloud; 
 
         Eigen::Vector3d goal;
-        Eigen::Vector3d last_goal;
-        Eigen::Vector3d pos;
-        Eigen::Vector3d vel;
-        Eigen::Vector3d acc;
+        Eigen::Vector3d last_safe_pos;
         
         pose current_pose;
 
@@ -175,8 +172,10 @@ class plasto_node
         double map_hz;
         double safety_horizon;
         double reached_threshold;
-        double distance_threshold;
-        double last_yaw;
+        double last_safe_yaw;
+        double end_time_tol = 0.10;
+        double end_dist_tol = 0.10;
+        double e_stop_time = 0.25;
 
         int degree;
         int state;
@@ -186,12 +185,9 @@ class plasto_node
         bool have_global_cloud = false;
         bool sample_tree = false;
         bool is_enu = false;
-        bool get_first_pose = false;
-        bool init_last_pose = false;
+        bool init_first_pose = false;
         bool init_cloud = false;
         bool emergency_stop = false;
-
-        std::vector<octree_map::sliding_map::triangles> sfc_polygon;
 
         t_p_sc emergency_stop_time;
 
@@ -226,10 +222,6 @@ class plasto_node
         
         nav_msgs::Path vector_3d_to_path(
             vector<Vector3d> path_vector);
-
-        visualization_msgs::Marker 
-            visualize_triangle_list(Eigen::Vector4d color,
-            std::vector<octree_map::sliding_map::triangles> tri);
         
         visualization_msgs::MarkerArray 
             visualize_corridor(
@@ -312,8 +304,6 @@ class plasto_node
             _nh.param<double>("map/size", map_size, -1.0);
             _nh.param<double>("map/vfov", m_p.vfov, -1.0);
             _nh.param<double>("map/hfov", m_p.hfov, -1.0);
-            _nh.param<double>("sliding_map/distance_threshold", 
-                distance_threshold, -1.0);
 
             _nh.param<double>("sliding_map/size", m_p.s_m_s, -1.0);
 
@@ -400,8 +390,16 @@ class plasto_node
                 current_pose.pos = Eigen::Vector3d(h * cos(rand_angle), 
                     h * sin(rand_angle), dis_height(generator));
             
-                last_goal = current_pose.pos;
+                last_safe_pos = current_pose.pos;
+                init_first_pose = true;
             }
+            if (!have_global_cloud)
+            {
+                sm.set_parameters(
+                    m_p.hfov, m_p.vfov, m_p.m_r, 
+                    m_p.s_r, m_p.s_m_s,
+                    full_cloud, true);
+            }   
             
             local_cloud = 
                 pcl::PointCloud<pcl::PointXYZ>::Ptr(
@@ -411,9 +409,11 @@ class plasto_node
                 sm.set_parameters(
                     m_p.hfov, m_p.vfov, m_p.m_r, 
                     m_p.s_r, m_p.s_m_s,
-                    full_cloud, true, distance_threshold);
+                    full_cloud, true);
             else
                 map_timer.start();
+
+            rrt.set_parameters(rrt_param);
 
             state = agent_state::IDLE;
                 
@@ -431,6 +431,95 @@ class plasto_node
             command_timer.stop();
             planning_timer.stop();
             map_timer.stop();
+        }
+
+        void get_pose_goal_data(
+            Eigen::Vector3d &goal_copy,
+            pose &pose_copy)
+        {
+            std::lock(pose_update_mutex, goal_update_mutex);
+
+            pose_copy = current_pose;
+            goal_copy = goal;
+
+            pose_update_mutex.unlock();
+            goal_update_mutex.unlock();
+        }
+
+        void publish_or_update_command(
+            Eigen::Vector3d pos, Eigen::Vector3d vel, 
+            Eigen::Vector3d acc, double yaw)
+        {
+            if (simulation)
+            {
+                pose_update_mutex.lock();
+
+                current_pose.pos = pos;
+                current_pose.rot.e.z() = yaw;
+                
+                geometry_msgs::PoseStamped pose;
+                pose.header.frame_id = "world";
+                pose.pose.position.x = current_pose.pos.x();
+                pose.pose.position.y = current_pose.pos.y();
+                pose.pose.position.z = current_pose.pos.z();
+
+                get_uav_orientation(
+                    acc, current_pose.rot.e.z(), 
+                    current_pose.rot.q, current_pose.rot.r);
+
+                pose.pose.orientation.w = current_pose.rot.q.w();
+                pose.pose.orientation.x = current_pose.rot.q.x();
+                pose.pose.orientation.y = current_pose.rot.q.y();
+                pose.pose.orientation.z = current_pose.rot.q.z();
+
+                pose_pub.publish(pose);
+
+                pose_update_mutex.unlock();
+            }
+            // Not in a simulation
+            else if (!simulation)
+            // else if (!simulation && state != agent_state::IDLE)
+            {
+                mavros_msgs::PositionTarget target;
+                target.position.x = pos.x();
+                target.position.y = pos.y();
+                target.position.z = pos.z();
+
+                target.velocity.x = vel.x();
+                target.velocity.y = vel.y();
+                target.velocity.z = vel.z();
+
+                target.acceleration_or_force.x = acc.x();
+                target.acceleration_or_force.y = acc.y();
+                target.acceleration_or_force.z = acc.z();
+
+                command_pub.publish(target);
+            }
+        }
+
+        std::vector<Eigen::Vector3d> get_am_path_interval(double interval)
+        {
+            std::vector<Eigen::Vector3d> am_path;
+            for (int i = 0; i < (int)am.size(); i++)
+            {
+                double total_duration = 
+                    duration<double>(am[i].s_e_t.second - 
+                    am[i].s_e_t.first).count();
+                
+                double split = ceil(total_duration / interval); 
+                double corrected_interval = total_duration / split;
+                double accumulated = 0.0;
+                for (int k = 0; k < (int)split; k++)
+                {
+                    if (accumulated > total_duration)
+                        continue;
+                    am_path.push_back(
+                        am[i].traj.getPos(accumulated));
+                    accumulated += corrected_interval;
+                }
+            }
+
+            return am_path;
         }
 
 };

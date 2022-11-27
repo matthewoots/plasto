@@ -44,7 +44,7 @@ void CorridorGenerator::updateGlobalPath(const std::vector<Eigen::Vector3d> &pat
     std::reverse(guide_path_.begin(), guide_path_.end());
 }
 
-void CorridorGenerator::generateCorridorAlongPath(const std::vector<Eigen::Vector3d> &path)
+bool CorridorGenerator::generateCorridorAlongPath(const std::vector<Eigen::Vector3d> &path)
 {
     push_back_count = 0;
     flight_corridor_.clear(); // clear flight corridor generated from previous iteration
@@ -71,7 +71,7 @@ void CorridorGenerator::generateCorridorAlongPath(const std::vector<Eigen::Vecto
         if (iter_count > 200)
         {
             std::cout << "OVER MAX_ITER FAIL to generate corridor" << std::endl;
-            break;
+            return false;
         }
         if (!guide_point_adjusted)
         {
@@ -103,7 +103,7 @@ void CorridorGenerator::generateCorridorAlongPath(const std::vector<Eigen::Vecto
             if (guide_path_.size() < 2)
             {
                 std::cout << "TOO STAGNANT and guide_path empty FAIL to generate corridor" << std::endl;
-                break;
+                return false;
             }
             if (stagnant_count > 3)
             {
@@ -174,7 +174,7 @@ void CorridorGenerator::generateCorridorAlongPath(const std::vector<Eigen::Vecto
             // std::cout << "waypt size is " << waypoint_list_.size() << std::endl;
             // std::cout << "number of corridor " << flight_corridor_.size() << std::endl;
             // std::cout << "pushed back times " << push_back_count << std::endl;
-            break;
+            return true;
         }
     }
 }
@@ -267,7 +267,9 @@ Eigen::Vector3d CorridorGenerator::getGuidePoint(std::vector<Eigen::Vector3d> &g
     // {
     //     std::cout << "point " << point.transpose() << std::endl;
     // }
-    while ((center - guide_path.back()).norm() < radius)
+    
+    while ((center - guide_path.back()).norm() < radius && 
+        guide_path.size() > 1)
     {
         guide_path.pop_back();
         // std::cout << "popped " << std::endl;
@@ -415,8 +417,8 @@ Corridor CorridorGenerator::directionalSample(const Eigen::Vector3d &guide_point
     Corridor guide_pt_corridor = ret.first;
     Eigen::Vector3d obstacle = ret.second;
     auto [center, radius] = guide_pt_corridor;
-    double desired_radius = 1;
-    double resolution = 0.1;
+    double desired_radius = 0.5;
+    double resolution = 0.01;
     std::vector<Eigen::Vector3d> sample_point_bucket;
     if (radius >= desired_radius)
     {
@@ -617,6 +619,8 @@ Corridor CorridorGenerator::uniformBatchSample(const Eigen::Vector3d &guide_poin
 
         while (sample_num < max_sample_)
         {
+            flag:
+
             sample_num++;
             Eigen::Vector3d candidate_pt;
             if (sample_in_clutter)
@@ -662,7 +666,7 @@ Corridor CorridorGenerator::uniformBatchSample(const Eigen::Vector3d &guide_poin
                 // Reject point if it is in no fly zone
                 if (candidate_pt.x() <= x_max && candidate_pt.x() >= x_min &&
                     candidate_pt.y() <= y_max && candidate_pt.y() >= y_min)
-                    continue;
+                    goto flag;
             }
 
             CorridorPtr candidiate_corridor = std::make_shared<CorridorSample>();
