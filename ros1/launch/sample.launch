@@ -51,16 +51,17 @@
     <param name="map/hfov" value="2.0944"/>
     
     <param name="amtraj/weight/time_regularization" value="1024.0"/>
-    <param name="amtraj/weight/acceleration" value="15.0"/> 
-    <param name="amtraj/weight/jerk" value="1.0"/>
+    <param name="amtraj/weight/acceleration" value="32.0"/> 
+    <!-- 15.0 -->
+    <param name="amtraj/weight/jerk" value="2.50"/>
     <!-- 0.6 -->
-    <param name="amtraj/limits/max_vel" value="4.00"/>
-    <param name="amtraj/limits/max_acc" value="10.00"/>
-    <param name="amtraj/limits/iterations" value="23"/>
-    <param name="amtraj/limits/epsilon" value="0.2"/>
+    <param name="amtraj/limits/max_vel" value="7.00"/>
+    <param name="amtraj/limits/max_acc" value="15.00"/>
+    <param name="amtraj/limits/iterations" value="32"/>
+    <param name="amtraj/limits/epsilon" value="0.02"/>
 
-    <param name="safety/total_safety_horizon" value="0.8"/>
-    <param name="safety/reached_threshold" value="0.2"/>
+    <param name="safety/total_safety_horizon" value="$(arg planning_interval)"/>
+    <param name="safety/reached_threshold" value="0.1"/>
 
 </node>
 

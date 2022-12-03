@@ -21,6 +21,7 @@
 #include "lro_rrt_server.h"
 #include "mapper.h"
 #include "am_traj.hpp"
+#include "corridor_gen.h"
 
 #include <string>
 #include <thread>   
@@ -48,8 +49,6 @@
 #include <visualization_msgs/MarkerArray.h>
 
 #include <mavros_msgs/PositionTarget.h>
-
-#include <corridor_gen.h>
 
 #define KNRM  "\033[0m"
 #define KRED  "\033[31m"

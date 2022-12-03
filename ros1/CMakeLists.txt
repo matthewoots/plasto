@@ -42,9 +42,9 @@ link_directories(${PCL_LIBRARY_DIRS})
 # https://github.com/SRombauts/SQLiteCpp/issues/250#issuecomment-569876565
 add_subdirectory(../lib_lro_rrt lro_rrt)
 add_subdirectory(../lib_octree_local_map lib_olm)
+add_subdirectory(../lib_corridor_generator corridor_gen)
 
 add_executable(${PROJECT_NAME}_node 
-    src/corridor_gen.cpp
     src/callbacks.cpp
     src/main.cpp
     src/plasto.cpp
@@ -66,4 +66,5 @@ target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}
   lro_rrt
   lib_olm
+  corridor_gen
 )

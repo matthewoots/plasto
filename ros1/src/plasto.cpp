@@ -40,7 +40,7 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
     if (!init_first_pose)
         return;
 
-    // t_p_sc mapper_start = system_clock::now();
+    t_p_sc mapper_start = system_clock::now();
 
     pose pose_copy;
     Eigen::Vector3d goal_copy;
@@ -63,9 +63,9 @@ void plasto_node::local_map_timer(const ros::TimerEvent &)
     obstacle_msg.header.stamp = ros::Time::now();
     local_pcl_pub.publish(obstacle_msg);
 
-    // double total = duration<double>(system_clock::now() - mapper_start).count() * 1000;
-    // std::cout << "mapping duration (" << KGRN <<
-    //     total << "ms" << KNRM << ")" << std::endl;
+    double total = duration<double>(system_clock::now() - mapper_start).count() * 1000;
+    std::cout << "mapping duration (" << KGRN <<
+        total << "ms" << KNRM << ")" << std::endl;
 
 }
 
@@ -229,8 +229,6 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
     am_mutex.unlock();
     state_mutex.unlock();
 
-    // printf("trash_collection\n");
-
     /**
      * @brief 
      * Conduct an update to the octree by providing the local points
@@ -268,8 +266,6 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
                 else
                     fail_count++;
             }
-            
-            // printf("select points\n");
 
             if (fail_count == (int)am.size())
             {
@@ -298,8 +294,6 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
                     horizon_time = am.back().s_e_t.second;
             }
 
-            // printf("fail count checked\n");
-
             double t1 = duration<double>(horizon_time - am[idx].s_e_t.first).count();
             start_point = am[idx].traj.getPos(t1);
 
@@ -315,7 +309,6 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
         }
     }
     state_mutex.unlock();
-    // printf("check path\n");
 
     if ((goal_copy - start_point).norm() < end_dist_tol)
     {
@@ -393,51 +386,56 @@ void plasto_node::plasto_timer(const ros::TimerEvent &)
             debug_pub.publish(edges);
         }
 
-        std::shared_ptr<CorridorGen::CorridorGenerator> 
-            corridor_generator = 
-            std::make_shared<CorridorGen::CorridorGenerator>(
-            rrt_param.r, rrt_param.r*2, 50, 
-            rrt_param.h_c.second, rrt_param.h_c.first, 
-            rrt_param.r*2, true, no_fly_zone);
-    
-        local_map_mutex.lock();
-        corridor_generator->updatePointCloud(local_cloud);
-        std::vector<Corridor> corridor_list;
-        local_map_mutex.unlock();
-
-        bool corridor_success = 
-            corridor_generator->generateCorridorAlongPath(global_setpoints);
-        // printf("generateCorridorAlongPath complete \n");
-        corridor_list = corridor_generator->getCorridor();
-        // printf("getCorridor complete \n");
-        visualization_msgs::MarkerArray corridor_msg =
-            visualize_corridor(corridor_list, color_range[1]);
-
-        sfc_pub.publish(corridor_msg);
-
-        global_search_path = corridor_generator->getWaypointList();
-        // printf("getWaypointList complete \n");
-        if (global_search_path.empty())
+        if (!local_cloud->points.empty())
         {
-            std::lock(am_mutex, state_mutex);
+            std::shared_ptr<CorridorGen::CorridorGenerator> 
+                corridor_generator = 
+                std::make_shared<CorridorGen::CorridorGenerator>(
+                rrt_param.r, rrt_param.r*2, 50, 
+                rrt_param.h_c.second, rrt_param.h_c.first, 
+                rrt_param.r*2, true, no_fly_zone);
+        
+            local_map_mutex.lock();
+            corridor_generator->updatePointCloud(local_cloud);
+            std::vector<Corridor> corridor_list;
+            local_map_mutex.unlock();
 
-            std::cout << KRED << "[plasto_timer] " <<
-                "global_search_path empty, emergency stop" << KNRM << std::endl;
-            
-            am.clear();
-            emergency_stop = true;
-            state = agent_state::IDLE;
-            is_safe = false;
+            bool corridor_success = 
+                corridor_generator->generateCorridorAlongPath(global_setpoints);
+            // printf("generateCorridorAlongPath complete \n");
+            corridor_list = corridor_generator->getCorridor();
+            // printf("getCorridor complete \n");
+            visualization_msgs::MarkerArray corridor_msg =
+                visualize_corridor(corridor_list, color_range[1]);
 
-            emergency_stop_time = system_clock::now();
+            sfc_pub.publish(corridor_msg);
 
-            state_mutex.unlock();
-            am_mutex.unlock();
-            return;
+            global_search_path = corridor_generator->getWaypointList();
+            // printf("getWaypointList complete \n");
+            if (global_search_path.empty())
+            {
+                std::lock(am_mutex, state_mutex);
+
+                std::cout << KRED << "[plasto_timer] " <<
+                    "global_search_path empty, emergency stop" << KNRM << std::endl;
+                
+                am.clear();
+                emergency_stop = true;
+                state = agent_state::IDLE;
+                is_safe = false;
+
+                emergency_stop_time = system_clock::now();
+
+                state_mutex.unlock();
+                am_mutex.unlock();
+                return;
+            }
+
+            if (!corridor_success)
+                is_safe = false;
         }
-
-        if (!corridor_success)
-            is_safe = false;
+        else
+            global_search_path = global_setpoints;        
 
         nav_msgs::Path global_path = 
             vector_3d_to_path(global_search_path);

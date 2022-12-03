@@ -7,3 +7,6 @@
 [submodule "lib_octree_local_map"]
 	path = lib_octree_local_map
 	url = git@github.com:matthewoots/lib_octree_local_map.git
+[submodule "lib_corridor_generator"]
+	path = lib_corridor_generator
+	url = git@github.com:mamariomiamo/corridor_gen.git
